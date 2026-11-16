@@ -82,7 +82,7 @@ function route(): void {
     if (typeof cleanup === 'function') cleanup();
     cleanup = undefined;
     current = key;
-    const wide = r.name === 'convert' || r.name === 'live' || r.name === 'view';
+    const wide = r.name === 'live' || r.name === 'view';
     sh.setWide(wide);
     sh.setActive(r.name ? `#/${r.name}` : '#/');
     sh.main.innerHTML = '';
@@ -96,7 +96,7 @@ function route(): void {
         });
         break;
       case 'convert':
-        cleanup = renderConvert(sh.main);
+        cleanup = renderConvert(sh.main, { setWide: (w) => sh.setWide(w) });
         break;
       case 'live':
         cleanup = renderLive(sh.main);

@@ -54,18 +54,17 @@ export class GraphView {
   private state: DesmosState | null = null;
   private highlighted: string[] = [];
   private soloIds: string[] | null = null;
-  private dark: boolean;
   private resizeObs: ResizeObserver;
   /** Base style per expression id (to restore after highlight). */
   private base = new Map<string, { color: string; lineWidth?: string }>();
 
   private constructor(private container: HTMLElement, calc: Desmos.Calculator, opts: GraphViewOptions) {
     this.calc = calc;
-    this.dark = opts.dark;
     this.resizeObs = new ResizeObserver(() => {
       this.calc.resize();
     });
     this.resizeObs.observe(container);
+    container.classList.toggle('is-dark', opts.dark);
     if (import.meta.env.DEV) (window as unknown as { __m2dGraph?: GraphView }).__m2dGraph = this;
   }
 
@@ -83,7 +82,6 @@ export class GraphView {
       showGrid: false,
       showXAxis: false,
       showYAxis: false,
-      invertedColors: opts.dark,
     });
     return new GraphView(container, calc, opts);
   }
@@ -108,10 +106,13 @@ export class GraphView {
     return this.state;
   }
 
+  /**
+   * Dark preview: a CSS filter (invert 93% + hue-rotate 180deg) maps Desmos'
+   * white paper to the page background #121212 and black ink to #ededed,
+   * while hues (the blue highlight) survive. Exports are untouched.
+   */
   setDark(dark: boolean): void {
-    this.dark = dark;
-    this.calc.updateSettings({ invertedColors: dark });
-    if (this.highlighted.length) this.highlight(this.highlighted);
+    this.container.classList.toggle('is-dark', dark);
   }
 
   /** Fit a viewport into the container without distorting the aspect ratio. */
@@ -145,7 +146,7 @@ export class GraphView {
 
   /** Colour the given expressions in the accent colour (and thicken strokes). */
   highlight(ids: string[]): void {
-    const color = this.dark ? invertHex(HIGHLIGHT) : HIGHLIGHT;
+    const color = HIGHLIGHT;
     const updates: Record<string, unknown>[] = [];
     for (const id of this.highlighted) {
       if (ids.includes(id)) continue;

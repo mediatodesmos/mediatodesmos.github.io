@@ -68,14 +68,14 @@ export function renderLive(main: HTMLElement): () => void {
     el(
       'div',
       { class: 'ws-top' },
-      el('div', { class: 'ws-file' }, el('span', { class: 'ws-file-icon' }, icon('camera', { size: 16 })), el('div', { class: 'ws-file-text' }, el('span', { class: 'ws-file-name' }, 'Live webcam'), el('span', { class: 'ws-file-meta' }, 'Frames are traced on this device and never leave it'))),
+      el('div', { class: 'ws-file' }, el('span', { class: 'ws-file-icon' }, icon('camera', { size: 16 })), el('div', { class: 'ws-file-text' }, el('span', { class: 'ws-file-name' }, 'Live webcam'), el('span', { class: 'ws-file-sub' }, 'Frames are traced on this device and never leave it'))),
       el('div', { class: 'ws-actions' }, freezeBtn, startBtn),
     ),
     el(
       'div',
       { class: 'live-grid' },
       el('aside', { class: 'panel scroll live-left' }, el('div', { class: 'panel-body' }, camWrap, controls)),
-      el('section', { class: 'ws-center' }, el('div', { class: 'ws-graph-wrap' }, graphHost, graphStatus), el('div', { class: 'ws-stats live-stats' }, fpsStat.el, segStat.el)),
+      el('section', { class: 'ws-center' }, el('div', { class: 'ws-graph-wrap' }, graphHost, graphStatus), el('div', { class: 'ws-stats live-stats stat-compact' }, fpsStat.el, segStat.el)),
     ),
   );
   mount(main, root);

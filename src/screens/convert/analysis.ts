@@ -5,7 +5,7 @@
  */
 
 import { el } from '../../ui/dom';
-import { chipTray } from '../../ui/components';
+import { segmented } from '../../ui/components';
 import type { RgbaImage, TraceResult } from '../../pipeline/types';
 import { drawShapes } from '../../render/shapes';
 
@@ -46,7 +46,7 @@ export class Analysis {
       },
     });
     this.info = el('div', { class: 'an-info' });
-    this.tray = chipTray<AnalysisView>(
+    this.tray = segmented<AnalysisView>(
       [
         { value: 'source', label: 'Source', icon: 'image' },
         { value: 'bitmap', label: 'Bitmap', icon: 'contrast' },
@@ -57,6 +57,7 @@ export class Analysis {
         this.view = v;
         this.draw();
       },
+      { size: 'sm', full: true },
     );
     this.el = el(
       'div',

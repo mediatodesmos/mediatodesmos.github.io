@@ -64,6 +64,15 @@
   max-width: 42ch;
 }
 
+.ws-file-sub {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .ws-file-meta {
   font: 500 11px/16px var(--font-mono);
   color: var(--fg-muted);
@@ -150,7 +159,7 @@
   border: 1px solid var(--line-med);
   border-radius: var(--r-mock);
   overflow: hidden;
-  background: #000;
+  background: var(--bg);
   box-shadow: var(--shadow-xl);
 }
 
@@ -161,6 +170,11 @@
 .ws-graph {
   position: absolute;
   inset: 0;
+}
+
+/* Dark preview: Desmos paper #fff becomes #121212, ink #000 becomes #ededed, hues survive. */
+.ws-graph.is-dark {
+  filter: invert(0.93) hue-rotate(180deg);
 }
 
 .ws-preview {
@@ -1047,6 +1061,22 @@
 
   .gal-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  /* Icon-only secondary actions; the label stays for screen readers. */
+  .ws-act .btn-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .ws-act {
+    padding-inline: 10px;
   }
 }
 

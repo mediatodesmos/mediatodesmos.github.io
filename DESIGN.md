@@ -58,7 +58,7 @@ This design system copies the visual language of the Vertex landing page (https:
 
 ## 4. Layout
 
-- Container: max-width 1024px, centred. Header and footer are full width.
+- Container: responsive, following Tailwind's container steps (640 / 768 / 1024 / 1280 / 1536px). At a 1440px window Vertex is 1280px wide. Header and footer are full width; the workspace screens go full width ("wide mode").
 - Frame: the outer wrapper has a 1px left/right border. An inner wrapper is inset 4px (6px sm, 8px lg) with its own 1px left/right border, giving the double rail.
 - Sections: `py-16 md:py-24` (64/96px). Sections are separated by `1px dashed var(--border)`. The hero adds 96-128px of top padding.
 - Spacing scale: 4px base, mostly 8/12/20/24px gaps.
@@ -74,7 +74,7 @@ This design system copies the visual language of the Vertex landing page (https:
 ## 5. Components
 
 - **Primary button:** `#fafafa` background, `#171717` text, 40px tall, 0 24px padding, 6px radius, 500 14px, `transition: all 150ms cubic-bezier(.4,0,.2,1)`. Pressed state `scale(.98)`.
-- **Outline button:** `rgba(66,66,66,.3)` background, 1px `#242424` border, light text.
+- **Outline button:** `rgb(36 36 36 / .3)` background, 1px `#242424` border, light text.
 - **Card button:** `#191919` background, 1px ring at fg/10%, `shadow-sm`, 32px tall, 12px text.
 - **Ghost button:** transparent; hover `--accent`.
 - **Focus:** `box-shadow: 0 0 0 3px rgb(140 140 140 / .5)`.
@@ -91,7 +91,7 @@ This design system copies the visual language of the Vertex landing page (https:
 - **Stats:** a 2×2 grid of stat blocks.
 - **FAQ:** a category rail on the left and an accordion on the right.
   - Items have a bottom border and 28px vertical padding. Questions are 16px 600, and drop to 70% opacity on hover.
-  - The open/closed marker is the literal text `[+]` / `[-]` in muted colour, drawn as text, not an icon.
+  - The open/closed marker reproduces Vertex's `[+]` / `[-]` look, drawn as a custom SVG (brackets plus plus/minus strokes), never as text glyphs.
 - **Mega-menu style lists:** a 36px square icon box (border fg/5%, background `--bg`) beside a 14px title and a muted one-line description. Hover background fg/3%.
 
 ## 6. Icons

@@ -15,7 +15,7 @@ export function renderGallery(main: HTMLElement): () => void {
       overline: 'Projects',
       title: 'Your graphs.',
       lead: 'Projects are saved in this browser only. Nothing is uploaded, so clearing site data deletes them. Export anything you want to keep.',
-      align: 'left',
+      align: 'center',
     }),
     grid,
   );

@@ -34,8 +34,13 @@ type Source =
 
 const EXT = (name: string) => (name.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toUpperCase();
 
-export function renderConvert(main: HTMLElement): () => void {
-  const screen = new ConvertScreen(main);
+export interface ConvertContext {
+  /** Let the workspace use the full window width (the empty state uses the normal frame). */
+  setWide: (wide: boolean) => void;
+}
+
+export function renderConvert(main: HTMLElement, ctx: ConvertContext = { setWide: () => undefined }): () => void {
+  const screen = new ConvertScreen(main, ctx);
   return () => screen.destroy();
 }
 
@@ -71,7 +76,7 @@ class ConvertScreen {
   private ws: HTMLElement | null = null;
   private hoverHL = debounce((e: InspectorEntry | null) => this.applyHighlight(e), 40);
 
-  constructor(main: HTMLElement) {
+  constructor(main: HTMLElement, private ctx: ConvertContext) {
     this.root = el('div', { class: 'convert' });
     mount(main, this.root);
     window.addEventListener('m2d:open', this.openListener);
@@ -209,6 +214,7 @@ class ConvertScreen {
   }
 
   private renderEmpty(): void {
+    this.ctx.setWide(false);
     this.ws = null;
     this.graph?.destroy();
     this.graph = null;
@@ -260,6 +266,7 @@ class ConvertScreen {
   private async renderWorkspace(): Promise<void> {
     if (this.destroyed) return;
     const src = this.source!;
+    this.ctx.setWide(true);
     this.stopPlayback();
     this.graph?.destroy();
     this.graph = null;
@@ -325,7 +332,7 @@ class ConvertScreen {
       exprs: stat('Expressions', '0'),
       size: stat('Graph size', '0 KB'),
     };
-    const stats = el('div', { class: 'ws-stats' }, ...Object.values(this.statsEls).map((s) => s.el));
+    const stats = el('div', { class: 'ws-stats stat-compact' }, ...Object.values(this.statsEls).map((s) => s.el));
 
     // Top bar
     const meta: string[] = [];
@@ -351,9 +358,9 @@ class ConvertScreen {
       el(
         'div',
         { class: 'ws-actions' },
-        button({ label: 'New', icon: 'upload', variant: 'ghost', size: 'sm', onClick: () => this.pickNew() }),
-        button({ label: 'Save', icon: 'save', variant: 'outline', size: 'sm', onClick: () => void this.save() }),
-        button({ label: 'Share', icon: 'share', variant: 'outline', size: 'sm', onClick: () => void this.share() }),
+        button({ label: 'New', icon: 'upload', variant: 'ghost', size: 'sm', class: 'ws-act', title: 'Open another file', onClick: () => this.pickNew() }),
+        button({ label: 'Save', icon: 'save', variant: 'outline', size: 'sm', class: 'ws-act', title: 'Save to your projects', onClick: () => void this.save() }),
+        button({ label: 'Share', icon: 'share', variant: 'outline', size: 'sm', class: 'ws-act', title: 'Make a share link', onClick: () => void this.share() }),
         button({ label: 'Export to Desmos', icon: 'arrow-up-right', variant: 'primary', size: 'sm', onClick: () => this.exportGraph() }),
       ),
     );
@@ -773,14 +780,14 @@ class ConvertScreen {
     c.hidden = false;
     const g = c.getContext('2d')!;
     const dark = this.settings.dark;
-    g.fillStyle = dark ? '#000' : '#fff';
+    g.fillStyle = dark ? '#121212' : '#fff';
     g.fillRect(0, 0, c.width, c.height);
     const margin = 0.92;
     const s = Math.min(c.width / res.width, c.height / res.height) * margin;
     g.save();
     g.translate((c.width - res.width * s) / 2, (c.height - res.height * s) / 2);
     g.scale(s, s);
-    drawShapes(g, res.shapes, { ink: dark ? '#fff' : '#000', strokeWidth: (this.settings.strokeWidth * dpr) / s });
+    drawShapes(g, res.shapes, { ink: dark ? '#ededed' : '#000', strokeWidth: (this.settings.strokeWidth * dpr) / s });
     g.restore();
   }
 
