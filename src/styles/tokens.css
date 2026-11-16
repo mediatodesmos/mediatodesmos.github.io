@@ -1,0 +1,129 @@
+/*
+ * Media to Desmos design tokens.
+ * Values were read from computed styles on the Vertex landing page (Ruixen UI).
+ * Dark is the only theme.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --bg: #121212;
+  --card: #191919;
+  --muted: #212121;
+  --raised: #1f1f1f;
+  --accent: #2b2b2b;
+  --footer: #000000;
+  --code-bg: #0f0f0f;
+
+  /* Lines */
+  --border: #242424;
+  --border-strong: #2e2e2e;
+  --border-hover: #3a3a3a;
+  --line-soft: rgb(235 235 235 / 0.1); /* fg/10: dashed grid dividers, card headers */
+  --line-med: rgb(235 235 235 / 0.15); /* fg/15: stacked mockup, format grid outline */
+  --cross: rgb(235 235 235 / 0.25); /* "+" crosshair marks */
+  --header-line: rgb(36 36 36 / 0.4);
+
+  /* Text */
+  --fg: #ebebeb;
+  --fg-strong: #fafafa;
+  --fg-muted: #9b9b9b;
+  --fg-faint: #a3a3a3; /* footer headings and links (neutral-400) */
+  --fg-dim: #737373; /* footer arrows (neutral-500) */
+  --fg-subtle: #5f5f5f; /* placeholders, disabled */
+
+  /* Actions */
+  --primary: #fafafa;
+  --primary-fg: #171717;
+  --primary-hover: #e3e3e3;
+  --input-bg: rgb(36 36 36 / 0.3);
+  --input-bg-hover: rgb(36 36 36 / 0.5);
+  --ring: #8c8c8c;
+  --ring-soft: rgb(140 140 140 / 0.5);
+
+  /* The single accent */
+  --blue: #3b82f6;
+  --blue-400: #60a5fa;
+  --blue-600: #2563eb;
+  --blue-900: #1e3a8a;
+  --blue-950: #172554;
+  --blue-soft: rgb(59 130 246 / 0.1);
+  --blue-line: rgb(59 130 246 / 0.4);
+
+  /* Status */
+  --danger: #ef4444;
+  --danger-400: #f87171;
+  --danger-900: #7f1d1d;
+  --danger-950: #450a0a;
+  --success: #22c55e;
+
+  /* Overlays */
+  --hover: rgb(235 235 235 / 0.05);
+  --hover-soft: rgb(235 235 235 / 0.03);
+  --scrim: rgb(0 0 0 / 0.6);
+
+  /* Patterns */
+  --tint: linear-gradient(55deg, rgb(56 144 255 / 0.1), rgb(56 144 255 / 0.04) 35%);
+  --hatch: repeating-linear-gradient(315deg, rgb(255 255 255 / 0.1) 0 1px, transparent 0 50%);
+  --dots: radial-gradient(circle, #ebebeb 1px, transparent 1px);
+
+  /* Type */
+  --font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-serif: 'Newsreader', Georgia, 'Times New Roman', serif;
+
+  /* Radii */
+  --r-xs: 4px;
+  --r-btn: 6px; /* buttons, nav items */
+  --r-base: 8px;
+  --r-chip: 10px; /* chips, segmented pill */
+  --r-card: 12px; /* cards, panels */
+  --r-tray: 15px; /* chip tray */
+  --r-mock: 16px; /* large mockups, dialogs */
+  --r-full: 999px;
+
+  /* Motion */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur: 150ms;
+  --dur-color: 300ms;
+  --dur-slide: 500ms;
+
+  /* Elevation (barely visible on dark, as on Vertex) */
+  --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.15), 0 2px 4px -2px rgb(0 0 0 / 0.15);
+  --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+  --shadow-pop: 0 16px 40px -8px rgb(0 0 0 / 0.7), 0 2px 8px rgb(0 0 0 / 0.35);
+
+  /* Layout */
+  --header-h: 64px;
+  --rail-gap: 4px;
+  --section-pad-y: 64px;
+  --section-pad-x: 24px;
+
+  /* Layers */
+  --z-header: 50;
+  --z-toast: 100;
+  --z-tooltip: 110;
+}
+
+@media (min-width: 640px) {
+  :root {
+    --rail-gap: 6px;
+    --section-pad-x: 32px;
+  }
+}
+
+@media (min-width: 768px) {
+  :root {
+    --section-pad-y: 96px;
+  }
+}
+
+@media (min-width: 1024px) {
+  :root {
+    --rail-gap: 8px;
+    --section-pad-x: 48px;
+  }
+}
