@@ -12,4 +12,11 @@ import type { FirebaseOptions } from 'firebase/app';
  *
  * While this is `null`, sign-in reports "Sign-in is not configured yet" and BETA features stay locked.
  */
-export const firebaseConfig: FirebaseOptions | null = null;
+export const firebaseConfig: FirebaseOptions | null = {
+  apiKey: 'AIzaSyAW6XzWemtvwrl9j3ReQ7G1QjmKeWnv7qc',
+  authDomain: 'mediatodesmos-9a7ef.firebaseapp.com',
+  projectId: 'mediatodesmos-9a7ef',
+  storageBucket: 'mediatodesmos-9a7ef.firebasestorage.app',
+  messagingSenderId: '480412722532',
+  appId: '1:480412722532:web:dfdb6aa990e70cf69e4671',
+};
