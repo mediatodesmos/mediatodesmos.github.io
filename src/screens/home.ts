@@ -555,7 +555,9 @@ function heroSection(ctx: HomeContext, alive: () => boolean): HTMLElement {
       el(
         'p',
         { class: 'lead hero-lead' },
-        'Media to Desmos traces PNGs and MP4s into black-and-white equations (Bezier curves, filled polygons or Fourier series) and hands them to Desmos in one paste.',
+        'Media to Desmos traces PNGs and MP4s to equations that even you can use on any desmos graph! Created by ',
+        el('u', null, 'Xiaole Zhang'),
+        '.',
       ),
       el(
         'div',
