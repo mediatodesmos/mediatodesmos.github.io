@@ -1,0 +1,518 @@
+/*
+ * Account UI: the header control and menu, the mobile menu block, the sign-in sheet and the BETA gate.
+ * Built only from the shared tokens and components (see DESIGN.md). Imported by src/account/*.
+ */
+
+/* ================================================================ avatar */
+
+.avatar {
+  --avatar: 32px;
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: var(--avatar);
+  height: var(--avatar);
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-full);
+  background: var(--muted);
+  color: var(--fg);
+  user-select: none;
+}
+
+.avatar-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.avatar-initial {
+  font-size: calc(var(--avatar) * 0.42);
+  line-height: 1;
+  font-weight: 600;
+}
+
+.avatar .icon {
+  color: var(--fg-muted);
+}
+
+/* ================================================================ header control */
+
+.account {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
+.account-placeholder {
+  display: block;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-full);
+  background: var(--muted);
+}
+
+/* Below 1024px the header is tight, so "Sign in" shows as its icon (aria-label keeps the name). */
+@media (max-width: 1023px) {
+  .account-signin {
+    width: var(--btn-h);
+    padding: 0;
+  }
+  .account-signin .btn-label {
+    display: none;
+  }
+}
+
+/*
+ * Tablets (768-1023px) show the full nav, and with the account control the header would run past the
+ * window (it already overflowed at 768px). The "Convert a file" button steps aside there: the nav's first
+ * link, Convert, goes to the same place. It comes back at 1024px.
+ */
+@media (min-width: 768px) and (max-width: 1023px) {
+  .header-cta {
+    display: none;
+  }
+}
+
+.account-avatar {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-full);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.account-avatar .avatar {
+  transition: border-color var(--dur) var(--ease);
+}
+
+.account-avatar:hover .avatar,
+.account-avatar[aria-expanded='true'] .avatar {
+  border-color: var(--border-hover);
+}
+
+.account-menu {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  width: 280px;
+  max-width: calc(100vw - 24px);
+  padding: 4px;
+  border: 1px solid var(--line-med);
+  border-radius: var(--r-card);
+  background: var(--card);
+  box-shadow: var(--shadow-pop);
+  transform-origin: top right;
+  animation: pop-in 160ms var(--ease-out) both;
+}
+
+.account-menu[hidden] {
+  display: none;
+}
+
+.account-menu-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 10px 12px;
+}
+
+.account-who {
+  min-width: 0;
+}
+
+.account-name {
+  color: var(--fg-strong);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+.account-email {
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.account-menu-beta {
+  padding: 10px;
+  border-top: 1px dashed var(--border-strong);
+}
+
+.account-menu-foot {
+  padding-top: 4px;
+  border-top: 1px dashed var(--border-strong);
+}
+
+.account-menu-signout {
+  width: 100%;
+  justify-content: flex-start;
+  margin-top: 0;
+  color: var(--fg);
+}
+
+/* ================================================================ mobile menu */
+
+.mm-account {
+  display: flex;
+  flex-direction: column;
+  padding: 0 20px;
+}
+
+.mm-account:empty {
+  display: none;
+}
+
+.mm-account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 500;
+  text-align: left;
+  animation: slide-in-x 260ms var(--ease-out) both;
+  animation-delay: 150ms;
+}
+
+.mm-account-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.mm-account-label > .icon {
+  color: var(--fg-muted);
+}
+
+.mm-account-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.mm-account-hint {
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 400;
+}
+
+.mm-account-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border);
+  animation: slide-in-x 260ms var(--ease-out) both;
+  animation-delay: 150ms;
+}
+
+.mm-account-info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* ================================================================ sign-in sheet */
+
+.signin {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* [hidden] must win over the display set on .field, .field-row and friends. */
+.signin [hidden] {
+  display: none !important;
+}
+
+.signin-feature-slot:empty {
+  display: none;
+}
+
+.signin-feature {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line-med);
+  border-radius: var(--r-card);
+  background: var(--tint);
+}
+
+.signin-feature-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--blue-900);
+  border-radius: var(--r-base);
+  background: var(--blue-950);
+  color: var(--blue-400);
+}
+
+.signin-feature-text {
+  align-self: center;
+  color: var(--fg);
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.signin-feature-text strong {
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+
+.signin-feature-cta {
+  color: var(--fg-muted);
+}
+
+.signin-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-card);
+  background: var(--muted);
+}
+
+.signin-notice > .icon {
+  margin-top: 2px;
+  color: var(--fg-muted);
+}
+
+.signin-notice-title {
+  color: var(--fg-strong);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+}
+
+.signin-notice-text {
+  margin-top: 2px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.signin-google,
+.signin-submit {
+  width: 100%;
+}
+
+.signin-or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--fg-dim);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.signin-or::before,
+.signin-or::after {
+  content: '';
+  flex: 1;
+  border-top: 1px dashed var(--border-strong);
+}
+
+.signin-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.signin-input {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.signin-input > .icon {
+  position: absolute;
+  left: 11px;
+  color: var(--fg-muted);
+  pointer-events: none;
+}
+
+.signin .input {
+  height: 40px;
+  padding-left: 36px;
+  font-size: 14px;
+}
+
+.signin .input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.signin-input.has-reveal .input {
+  padding-right: 40px;
+}
+
+.signin-reveal {
+  position: absolute;
+  right: 6px;
+}
+
+/* 16px text keeps iOS Safari from zooming in when a field takes focus. */
+@media (max-width: 639px) {
+  .signin .input {
+    font-size: 16px;
+  }
+}
+
+.signin-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--r-xs);
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: var(--border-hover);
+  text-underline-offset: 3px;
+  transition: color var(--dur) var(--ease);
+}
+
+.signin-link:hover {
+  color: var(--fg);
+}
+
+.signin-msg {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-base);
+  background: var(--muted);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.signin-msg:empty {
+  display: none;
+}
+
+.signin-msg > .icon {
+  margin-top: 1px;
+}
+
+.signin-msg.is-error {
+  border-color: rgb(239 68 68 / 0.35);
+  background: rgb(239 68 68 / 0.08);
+  color: var(--danger-400);
+}
+
+.signin-msg.is-ok > .icon {
+  color: var(--success);
+}
+
+.signin-switch {
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.signin-switch .signin-link {
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.signin-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--border);
+  color: var(--fg-dim);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.signin-note > .icon {
+  margin-top: 1px;
+}
+
+/* ================================================================ BETA gate */
+
+.beta-gate {
+  position: relative;
+  min-width: 0;
+}
+
+.beta-gate-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  vertical-align: middle;
+}
+
+.beta-gate-top {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.beta-gate-top > .beta-badge {
+  align-self: flex-start;
+}
+
+/* Inside a field label the badge shrinks to the label's 18px line. */
+.field-label > .beta-badge {
+  margin-left: 8px;
+  padding-block: 0;
+  padding-inline: 6px;
+  vertical-align: top;
+}
+
+/* The lock covers the whole control while signed out and opens the sign-in sheet. */
+.beta-gate-lock {
+  position: absolute;
+  inset: -4px;
+  z-index: 1;
+  border-radius: var(--r-base);
+  background: transparent;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease);
+}
+
+.beta-gate-lock:hover {
+  background: var(--hover-soft);
+}
+
+.beta-gate-lock[hidden] {
+  display: none;
+}
+
+.beta-gate.is-locked :is(input, select, textarea, .btn, .icon-btn, .seg, .chip-tray) {
+  opacity: 0.5;
+}
+
+.beta-gate.is-locked .field-hint {
+  opacity: 0.75;
+}

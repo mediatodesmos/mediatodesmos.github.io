@@ -5,7 +5,7 @@
  */
 
 import type { RgbaImage } from '../pipeline/types';
-import { rasterize } from './raster';
+import { rasterize, type CropRect } from './raster';
 
 export interface VideoSource {
   name: string;
@@ -16,7 +16,7 @@ export interface VideoSource {
   nativeFps: number;
   bytes?: number;
   file?: File;
-  frameAt(time: number, longSide: number): Promise<RgbaImage>;
+  frameAt(time: number, longSide: number, crop?: CropRect | null): Promise<RgbaImage>;
   dispose(): void;
 }
 
@@ -89,11 +89,11 @@ export class FileVideo implements VideoSource {
     });
   }
 
-  frameAt(time: number, longSide: number): Promise<RgbaImage> {
+  frameAt(time: number, longSide: number, crop?: CropRect | null): Promise<RgbaImage> {
     // Serialise seeks: one <video> element can only be at one place at a time.
     const job = this.busy.then(async () => {
       await this.seek(time);
-      return rasterize(this.video, longSide);
+      return rasterize(this.video, longSide, crop);
     });
     this.busy = job.catch(() => undefined);
     return job;

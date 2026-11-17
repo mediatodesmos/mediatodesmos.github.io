@@ -3,7 +3,7 @@
 export type Mode = 'outline' | 'fill' | 'fourier';
 
 /** Where outline / Fourier curves come from. */
-export type LineSource = 'edges' | 'centerline' | 'contours';
+export type LineSource = 'edges' | 'ink' | 'centerline' | 'contours';
 
 export interface TraceSettings {
   mode: Mode;
@@ -26,6 +26,14 @@ export interface TraceSettings {
   budget: number;
   /** Maximum Fourier terms per shape. */
   fourierTerms: number;
+  /** BETA In Color: trace colour layers (fill) or colour each shape (outline, Fourier). */
+  color: boolean;
+  /** BETA In Color: palette size (2..16). */
+  colors: number;
+  /** BETA Super Enhanced: contrast stretch, denoise and sharpen before tracing. */
+  enhance: boolean;
+  /** BETA Line-art cleanup: remove screentone and close small gaps in ink lines. */
+  lineCleanup: boolean;
 }
 
 export const DEFAULT_SETTINGS: TraceSettings = {
@@ -40,6 +48,10 @@ export const DEFAULT_SETTINGS: TraceSettings = {
   smoothing: 1.2,
   budget: 2500,
   fourierTerms: 40,
+  color: false,
+  colors: 8,
+  enhance: false,
+  lineCleanup: false,
 };
 
 export interface RgbaImage {
@@ -59,6 +71,8 @@ export interface StrokeShape {
   segs: number[];
   length: number;
   bbox: BBox;
+  /** In Color: the stroke's colour (#rrggbb). Black when absent. */
+  color?: string;
 }
 
 /** A filled region: outer ring plus holes. Rings are flat [x0,y0,x1,y1,...] without a repeated closing point. */
@@ -69,6 +83,10 @@ export interface RegionShape {
   /** Net area in px^2 (outer minus holes). */
   area: number;
   bbox: BBox;
+  /** In Color: the region's colour (#rrggbb). Black when absent. */
+  color?: string;
+  /** In Color: stacking layer (0 = background, drawn first). */
+  layer?: number;
 }
 
 /**
@@ -88,6 +106,8 @@ export interface FourierShape {
   /** Mean distance between the series and the traced curve, px. */
   error: number;
   bbox: BBox;
+  /** In Color: the curve's colour (#rrggbb). Black when absent. */
+  color?: string;
 }
 
 export type Shape = StrokeShape | RegionShape | FourierShape;

@@ -37,6 +37,15 @@ function fromBase64Url(s: string): Uint8Array {
   return out;
 }
 
+/** Any JSON value -> deflate-raw -> base64url text. */
+export async function compressJson(value: unknown): Promise<string> {
+  return toBase64Url(await pipe(new TextEncoder().encode(JSON.stringify(value)), new CompressionStream('deflate-raw')));
+}
+
+export async function decompressJson<T>(text: string): Promise<T> {
+  return JSON.parse(new TextDecoder().decode(await pipe(fromBase64Url(text), new DecompressionStream('deflate-raw')))) as T;
+}
+
 export async function encodeShare(p: SharePayload): Promise<string> {
   const json = new TextEncoder().encode(JSON.stringify(p));
   return toBase64Url(await pipe(json, new CompressionStream('deflate-raw')));

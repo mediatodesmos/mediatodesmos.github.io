@@ -1,6 +1,7 @@
 /** Settings model for the convert workspace. */
 
 import { DEFAULT_SETTINGS, type Mode, type TraceSettings } from '../../pipeline/types';
+import { isBetaEnabled } from '../../account/beta';
 
 export interface UiSettings extends TraceSettings {
   strokeWidth: number;
@@ -10,8 +11,51 @@ export interface UiSettings extends TraceSettings {
   dark: boolean;
   /** Fourier mode: rotating-circle animation for the largest shape. */
   epicycles: boolean;
+  /** Outline: fold very short strokes into one "small details" equation. */
+  mergeSmall: boolean;
+  /** Quality preset the sliders were last set from. */
+  quality: Quality;
+  /** Show axes, grid and numbers on the preview. */
+  axes: boolean;
+  /** BETA In Color. */
+  color: boolean;
+  colors: number;
+  /** BETA Super Enhanced (up to 1080p). */
+  enhance: boolean;
+  /** BETA Line-art cleanup. */
+  lineCleanup: boolean;
+  /** BETA Crop and resize. */
+  cropOn: boolean;
+  crop: Crop | null;
+  cropAspect: CropAspect;
   /** Remembered budget per mode. */
   budgets: Record<Mode, number>;
+}
+
+export type Quality = 'balanced' | 'max';
+
+/** A crop rectangle in fractions of the source (0..1). */
+export interface Crop {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+export type CropAspect = 'free' | '1:1' | '4:3' | '16:9' | '9:16';
+
+/** Highest working resolution: 1920 px (1080p) with Super Enhanced, otherwise 1200 for stills. */
+export const ENHANCED_MAX_RES = 1920;
+
+/** Slider values each preset applies (Balanced keeps Desmos fast; Max detail is for stills). */
+export function presetValues(q: Quality, video: boolean): Partial<UiSettings> {
+  if (q === 'max') {
+    return video
+      ? { resolution: 480, smoothing: 1.0, minSize: 4, edgeDetail: 60 }
+      : { resolution: 960, smoothing: 0.7, minSize: 4, edgeDetail: 65, mergeSmall: false, budgets: { outline: 9000, fill: 9000, fourier: 4000 } };
+  }
+  return video
+    ? { resolution: 320, smoothing: 1.4, minSize: 6, edgeDetail: 45 }
+    : { resolution: 480, smoothing: 1.2, minSize: 8, edgeDetail: 55, mergeSmall: true, budgets: { ...IMAGE_BUDGETS } };
 }
 
 export interface VideoSettings {
@@ -22,7 +66,7 @@ export interface VideoSettings {
 }
 
 export const IMAGE_BUDGETS: Record<Mode, number> = { outline: 2500, fill: 6000, fourier: 900 };
-export const VIDEO_BUDGETS: Record<Mode, number> = { outline: 350, fill: 1200, fourier: 300 };
+export const VIDEO_BUDGETS: Record<Mode, number> = { outline: 330, fill: 1200, fourier: 300 };
 
 export const BUDGET_RANGE: Record<Mode, { min: number; max: number; step: number; unit: string; units: string }> = {
   outline: { min: 50, max: 9000, step: 50, unit: 'segment', units: 'segments' },
@@ -38,6 +82,16 @@ export function defaultImageSettings(): UiSettings {
     notes: false,
     dark: true,
     epicycles: false,
+    mergeSmall: true,
+    quality: 'balanced',
+    axes: false,
+    color: false,
+    colors: 8,
+    enhance: false,
+    lineCleanup: false,
+    cropOn: false,
+    crop: null,
+    cropAspect: 'free',
     budgets: { ...IMAGE_BUDGETS },
   };
 }
@@ -45,8 +99,8 @@ export function defaultImageSettings(): UiSettings {
 export function defaultVideoSettings(): UiSettings {
   return {
     ...defaultImageSettings(),
-    resolution: 240,
-    smoothing: 1.5,
+    resolution: 320,
+    smoothing: 1.4,
     minSize: 6,
     edgeDetail: 45,
     budget: VIDEO_BUDGETS.outline,
@@ -70,6 +124,7 @@ export const MODE_INFO: Record<Mode, { label: string; blurb: string }> = {
 };
 
 export function traceSettingsOf(s: UiSettings): TraceSettings {
+  const beta = isBetaEnabled();
   return {
     mode: s.mode,
     lineSource: s.mode === 'fill' ? 'contours' : s.lineSource,
@@ -82,5 +137,15 @@ export function traceSettingsOf(s: UiSettings): TraceSettings {
     smoothing: s.smoothing,
     budget: s.budgets[s.mode],
     fourierTerms: s.fourierTerms,
+    // BETA settings only apply for signed-in people (a saved project may carry them).
+    color: beta && s.color,
+    colors: s.colors,
+    enhance: beta && s.enhance,
+    lineCleanup: beta && s.lineCleanup,
   };
+}
+
+/** The crop to apply, or null (crop is a BETA feature). */
+export function cropOf(s: UiSettings): Crop | null {
+  return isBetaEnabled() && s.cropOn && s.crop ? s.crop : null;
 }

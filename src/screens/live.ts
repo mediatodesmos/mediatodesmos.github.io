@@ -14,6 +14,7 @@ import { bridgedPath, INK, regionRings, strokeColumns } from '../desmos/build';
 import { bezierLatex, list, polygonLatex } from '../desmos/latex';
 import { emptyState as emptyGraph, imageViewport } from '../desmos/state';
 import { rasterize } from '../media/raster';
+import { PreviewView } from '../render/preview-view';
 
 type LiveMode = Exclude<Mode, 'fourier'>;
 
@@ -30,6 +31,8 @@ export function renderLive(main: HTMLElement): () => void {
   const video = el('video', { class: 'live-video', muted: true, playsInline: true, autoplay: true });
   const camWrap = el('div', { class: 'live-cam' }, video, el('div', { class: 'live-cam-off' }, icon('camera', { size: 28 }), el('p', null, 'Camera is off')));
   const graphHost = el('div', { class: 'ws-graph' });
+  const previewCanvas = el('canvas', { class: 'ws-preview', hidden: true, attrs: { 'aria-label': 'Preview drawn by Media to Desmos' } });
+  let preview: PreviewView | null = null;
   const graphStatus = el('div', { class: 'ws-graph-status' }, spinner(20), el('span', null, 'Loading Desmos...'));
   const fpsStat = stat('Updates / s', '0');
   const segStat = stat('Segments', '0');
@@ -75,7 +78,7 @@ export function renderLive(main: HTMLElement): () => void {
       'div',
       { class: 'live-grid' },
       el('aside', { class: 'panel scroll live-left' }, el('div', { class: 'panel-body' }, camWrap, controls)),
-      el('section', { class: 'ws-center' }, el('div', { class: 'ws-graph-wrap' }, graphHost, graphStatus), el('div', { class: 'ws-stats live-stats stat-compact' }, fpsStat.el, segStat.el)),
+      el('section', { class: 'ws-center' }, el('div', { class: 'ws-graph-wrap' }, graphHost, previewCanvas, graphStatus), el('div', { class: 'ws-stats live-stats stat-compact' }, fpsStat.el, segStat.el)),
     ),
   );
   mount(main, root);
@@ -98,7 +101,10 @@ export function renderLive(main: HTMLElement): () => void {
     })
     .catch((err) => {
       mount(graphStatus, icon('alert', { size: 18 }), el('span', null, err instanceof Error ? err.message : 'Desmos failed to load.'));
+      graphStatus.append(el('span', { class: 'ws-graph-status-sub' }, 'Showing a preview drawn by Media to Desmos instead.'));
       graphStatus.classList.add('is-error');
+      previewCanvas.hidden = false;
+      preview = new PreviewView(previewCanvas);
     });
 
   async function toggle(): Promise<void> {
@@ -152,6 +158,10 @@ export function renderLive(main: HTMLElement): () => void {
       try {
         const res = await pool.run(img, { ...ts, lineSource: mode === 'fill' ? 'contours' : 'edges', threshold: mode === 'fill' ? ts.threshold : -1 });
         if (!running) break;
+        if (!graph && preview) {
+          preview.setResult(res);
+          segStat.set(fmtInt(res.stats.segments + res.stats.points));
+        }
         if (graph) {
           if (mode === 'fill') {
             const rings = res.shapes.flatMap((s) => (s.kind === 'region' ? regionRings(s, res.height) : []));
@@ -207,6 +217,7 @@ export function renderLive(main: HTMLElement): () => void {
   return () => {
     stop();
     graph?.destroy();
+    preview?.destroy();
   };
 }
 

@@ -2,8 +2,10 @@
 
 import { el, mount } from '../../ui/dom';
 import { segmented, select, slider, toggle, button } from '../../ui/components';
+import { betaGate, isBetaEnabled } from '../../account/beta';
+import type { CropAspect } from './model';
 import type { LineSource, Mode } from '../../pipeline/types';
-import { BUDGET_RANGE, MODE_INFO, type UiSettings, type VideoSettings } from './model';
+import { BUDGET_RANGE, MODE_INFO, presetValues, type Quality, type UiSettings, type VideoSettings } from './model';
 
 export interface SettingsPanelOptions {
   onChange: (patch: Partial<UiSettings>) => void;
@@ -86,9 +88,10 @@ export class SettingsPanel {
   private render(): void {
     const s = this.s;
     const mode = s.mode;
-    const usesThreshold = mode === 'fill' || s.lineSource !== 'edges';
-    const usesEdges = mode !== 'fill' && s.lineSource === 'edges';
+    const usesThreshold = mode === 'fill' || s.lineSource === 'centerline' || s.lineSource === 'contours';
+    const usesEdges = mode !== 'fill' && (s.lineSource === 'edges' || s.lineSource === 'ink');
     const br = BUDGET_RANGE[mode];
+    const enhanced = s.enhance && isBetaEnabled();
 
     const modeCtl = segmented<Mode>(
       [
@@ -98,7 +101,7 @@ export class SettingsPanel {
       ],
       mode,
       (m) => {
-        const lineSource: LineSource = m === 'fourier' && s.lineSource === 'edges' ? 'contours' : s.lineSource;
+        const lineSource: LineSource = m === 'fourier' && (s.lineSource === 'edges' || s.lineSource === 'ink') ? 'contours' : s.lineSource;
         this.patch({ mode: m, lineSource, budget: s.budgets[m] }, true);
       },
       { full: true },
@@ -109,6 +112,7 @@ export class SettingsPanel {
         ? select<LineSource>({
             label: 'Lines come from',
             options: [
+              { value: 'ink', label: 'Ink lines (best for drawings and anime)' },
               { value: 'edges', label: 'Edges (best for photos)' },
               { value: 'centerline', label: 'Centre lines (best for line art)' },
               { value: 'contours', label: 'Shape outlines (best for logos)' },
@@ -135,10 +139,34 @@ export class SettingsPanel {
     this.thrHandle = thrSlider;
     if (s.threshold < 0) thrSlider.setDisabled(true);
 
+    const quality = segmented<Quality>(
+      [
+        { value: 'balanced', label: 'Balanced', title: 'Sharp, and still quick for Desmos to draw' },
+        { value: 'max', label: 'Max detail', title: 'Highest fidelity. Bigger graphs that Desmos draws more slowly' },
+      ],
+      s.quality,
+      (q) => {
+        const p = presetValues(q, !!this.v);
+        const budget = p.budgets ? p.budgets[s.mode] : s.budget;
+        this.patch({ ...p, quality: q, budget }, true);
+      },
+      { size: 'sm', full: true },
+    );
+
+    const merge =
+      mode === 'outline' && !this.v
+        ? toggle({
+            label: 'Merge small details',
+            value: s.mergeSmall,
+            hint: 'Short strokes share one equation, so Desmos manages far fewer expressions.',
+            onChange: (v) => this.patch({ mergeSmall: v }),
+          }).el
+        : null;
+
     const res = slider({
       label: 'Working resolution',
       min: this.v ? 96 : 120,
-      max: this.v ? 640 : 1200,
+      max: this.v ? (enhanced ? 960 : 640) : enhanced ? 1920 : 1200,
       step: 8,
       value: s.resolution,
       format: (v) => `${v} px`,
@@ -205,7 +233,7 @@ export class SettingsPanel {
     const budget = slider({
       label: this.v ? `Max ${br.units} per frame` : `Max ${br.units}`,
       min: br.min,
-      max: this.v ? Math.min(br.max, 4000) : br.max,
+      max: this.v ? Math.min(br.max, 4000) : enhanced ? 40000 : br.max,
       step: br.step,
       value: s.budgets[mode],
       format: (v) => v.toLocaleString('en-US'),
@@ -276,6 +304,7 @@ export class SettingsPanel {
       this.section('Drawing style', modeCtl.el, el('p', { class: 'field-hint mode-blurb' }, MODE_INFO[mode].blurb), sourceCtl),
       this.section(
         'Detail',
+        quality.el,
         res.el,
         edge,
         usesThreshold ? thrAuto.el : null,
@@ -285,12 +314,88 @@ export class SettingsPanel {
       ),
       this.section('Smoothing', blur.el, tol.el, speck.el),
       this.section('Equation budget', budget.el, terms),
-      this.section('Desmos output', stroke, notes, epi, dark),
+      this.section('Desmos output', stroke, merge, notes, epi, dark),
+      this.renderBeta(),
       el(
         'div',
         { class: 'settings-foot' },
         button({ label: 'Reset settings', icon: 'refresh', variant: 'ghost', size: 'sm', onClick: () => this.opts.onReset() }),
       ),
+    );
+  }
+
+  /** BETA features: every control is gated behind a (free) account. */
+  private renderBeta(): HTMLElement {
+    const s = this.s;
+    // In Color is for still images: video graphs stay black and white.
+    const color = this.v
+      ? null
+      : toggle({
+      label: 'In Color',
+      value: s.color,
+      hint: s.mode === 'fill' ? 'Traces colour layers that stack like paper cut-outs.' : 'Gives each stroke the colour of the picture under it.',
+      onChange: (v) => this.patch({ color: v }, true),
+    });
+    const colors = s.color && !this.v
+      ? slider({
+          label: 'Colours',
+          min: 2,
+          max: 16,
+          step: 1,
+          value: s.colors,
+          hint: 'How many colours to reduce the picture to. More colours means more equations.',
+          onInput: (v) => this.patch({ colors: v }),
+        }).el
+      : null;
+    const enhance = toggle({
+      label: this.v ? 'Super Enhanced (up to 960 px)' : 'Super Enhanced (up to 1080p)',
+      value: s.enhance,
+      hint: 'Cleans and sharpens the picture first, and unlocks higher resolutions and budgets. Very detailed graphs draw slowly in Desmos.',
+      onChange: (v) => this.patch({ enhance: v }, true),
+    });
+    const lineArt =
+      s.mode !== 'fill' && (s.lineSource === 'ink' || s.lineSource === 'centerline')
+        ? toggle({
+            label: 'Line-art cleanup',
+            value: s.lineCleanup,
+            hint: 'Removes screentone dots and joins small gaps in comic and anime line art.',
+            onChange: (v) => this.patch({ lineCleanup: v }),
+          })
+        : null;
+    const crop = toggle({
+      label: 'Crop and resize',
+      value: s.cropOn,
+      hint: 'Drag on the source picture above to crop it. Working resolution sets the output size.',
+      onChange: (v) => this.patch({ cropOn: v }, true),
+    });
+    const cropTools = s.cropOn
+      ? el(
+          'div',
+          { class: 'crop-tools' },
+          segmented<CropAspect>(
+            [
+              { value: 'free', label: 'Free' },
+              { value: '1:1', label: '1:1' },
+              { value: '4:3', label: '4:3' },
+              { value: '16:9', label: '16:9' },
+              { value: '9:16', label: '9:16' },
+            ],
+            s.cropAspect,
+            (v) => this.patch({ cropAspect: v }),
+            { size: 'sm', full: true },
+          ).el,
+          button({ label: 'Reset crop', icon: 'refresh', variant: 'ghost', size: 'sm', onClick: () => this.patch({ crop: null }, true) }),
+        )
+      : null;
+    return this.section(
+      'BETA features',
+      el('p', { class: 'field-hint' }, isBetaEnabled() ? 'Thanks for signing in. These features are still being tuned.' : 'Free with an account. Sign in to try them.'),
+      color ? betaGate(color.el, 'In Color') : null,
+      colors ? betaGate(colors, 'In Color') : null,
+      betaGate(enhance.el, 'Super Enhanced'),
+      lineArt ? betaGate(lineArt.el, 'Line-art cleanup') : null,
+      betaGate(crop.el, 'Crop and resize'),
+      cropTools ? betaGate(cropTools, 'Crop and resize', { badge: 'none' }) : null,
     );
   }
 

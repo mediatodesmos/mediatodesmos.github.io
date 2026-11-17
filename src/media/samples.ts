@@ -5,6 +5,7 @@
 
 import type { RgbaImage } from '../pipeline/types';
 import type { VideoSource } from './video';
+import { rasterize, type CropRect } from './raster';
 
 function canvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
   const c = document.createElement('canvas');
@@ -210,7 +211,8 @@ export class SampleVideo implements VideoSource {
     return c;
   }
 
-  async frameAt(time: number, longSide: number): Promise<RgbaImage> {
+  async frameAt(time: number, longSide: number, crop?: CropRect | null): Promise<RgbaImage> {
+    if (crop) return rasterize(this.drawFrame(time), longSide, crop);
     const scale = longSide / Math.max(this.width, this.height);
     const w = Math.max(1, Math.round(this.width * scale));
     const h = Math.max(1, Math.round(this.height * scale));

@@ -27,7 +27,7 @@ export function shapePath(sh: Shape): string {
       })
       .join('');
   }
-  const pts = sampleFourier(sh, Math.min(600, Math.max(60, sh.freq.length * 12)));
+  const pts = sampleFourier(sh, Math.min(360, Math.max(40, Math.ceil(sh.length / 4), sh.freq.length * 4)));
   let d = `M${f1(pts[0])} ${f1(pts[1])}`;
   for (let i = 2; i < pts.length; i += 2) d += `L${f1(pts[i])} ${f1(pts[i + 1])}`;
   return d + 'Z';
@@ -54,8 +54,9 @@ export function resultToSvg(res: TraceResult, opts: SvgOptions = {}): SVGSVGElem
   for (const sh of res.shapes) {
     const d = shapePath(sh);
     if (!d) continue;
-    if (sh.kind === 'region') svg.appendChild(svgEl('path', { d, fill: ink, 'fill-rule': 'evenodd' }));
-    else svg.appendChild(svgEl('path', { d, fill: 'none', stroke: ink, 'stroke-width': sw, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+    const c = sh.color ?? ink;
+    if (sh.kind === 'region') svg.appendChild(svgEl('path', { d, fill: c, 'fill-rule': 'evenodd' }));
+    else svg.appendChild(svgEl('path', { d, fill: 'none', stroke: c, 'stroke-width': sw, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
   }
   return svg;
 }
@@ -94,7 +95,7 @@ export function drawShapes(g: CanvasRenderingContext2D, shapes: Shape[], opts: C
   for (const sh of shapes) {
     const on = hl?.has(sh.id) ?? false;
     g.globalAlpha = hl && hl.size && opts.dimOthers && !on ? 0.25 : 1;
-    const color = on ? hc : ink;
+    const color = on ? hc : sh.color ?? ink;
     const p = path2d(sh);
     if (sh.kind === 'region') {
       g.fillStyle = color;

@@ -3,9 +3,12 @@
  * Routes are hash based (#/, #/convert, #/live, #/gallery).
  */
 
+import { themeToggle } from './theme';
+
 import { el, mount } from './dom';
 import { icon, logoMark, type IconName } from './icons';
 import { button, iconButton, tooltip } from './components';
+import { headerAccount, menuAccount } from '../account/account-ui';
 
 export interface NavItem {
   label: string;
@@ -167,6 +170,8 @@ export function mountShell(root: HTMLElement, o: ShellOptions): Shell {
         'div',
         { class: 'header-actions' },
         gh,
+        themeToggle(),
+        headerAccount(),
         button({ label: o.cta.label, href: o.cta.href, size: 'sm', variant: 'primary', class: 'header-cta' }),
         menuBtn,
       ),
@@ -198,6 +203,7 @@ export function mountShell(root: HTMLElement, o: ShellOptions): Shell {
       iconButton({ icon: 'x', title: 'Close menu', onClick: () => menu.close() }),
     ),
     el('nav', { class: 'mm-nav', attrs: { 'aria-label': 'Primary' } }, ...mmLinks, mmGithub),
+    menuAccount({ closeMenu: () => menu.close() }),
     el(
       'div',
       { class: 'mm-foot' },

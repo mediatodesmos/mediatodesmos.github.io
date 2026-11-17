@@ -1,0 +1,212 @@
+/*
+ * First-run tour (src/ui/tour.ts).
+ * The page dims around a spotlight drawn as a blueprint selection frame (the accent blue, with "+" marks
+ * on its corners), and a card tooltip built on .card / .card-head / .card-title / .card-desc and .btn.
+ */
+
+/* The modal <dialog> covers the viewport and stays transparent; the spotlight's shadow does the dimming. */
+.tour {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  outline: none;
+}
+
+.tour:not([open]) {
+  display: none;
+}
+
+.tour::backdrop {
+  background: transparent;
+}
+
+/* Hidden until the first step is measured, so nothing flashes at the corner. */
+.tour:not(.is-ready) .tour-spot,
+.tour:not(.is-ready) .tour-card {
+  visibility: hidden;
+}
+
+/* ---------------------------------------------------------------- spotlight */
+
+.tour-spot {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  border-radius: var(--r-card);
+  box-shadow: 0 0 0 200vmax var(--scrim);
+  outline: 1.5px solid var(--blue);
+  outline-offset: 0;
+  pointer-events: none;
+}
+
+.tour-spot .cross {
+  color: var(--blue);
+}
+
+/* Entrance animations use backwards fill only, so they never pin opacity after they end. */
+.tour.is-ready .tour-spot {
+  animation: fade-in 240ms var(--ease) backwards;
+}
+
+/* Glide between steps only; scroll and reflow updates track the target instantly. */
+.tour.is-moving .tour-spot {
+  transition:
+    top 420ms var(--ease-out),
+    left 420ms var(--ease-out),
+    width 420ms var(--ease-out),
+    height 420ms var(--ease-out),
+    border-radius 420ms var(--ease-out);
+}
+
+/* ---------------------------------------------------------------- card */
+
+.tour .tour-card {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: min(340px, calc(100vw - 24px));
+  box-shadow: var(--shadow-pop);
+  transition: opacity 160ms var(--ease);
+}
+
+.tour.is-ready .tour-card {
+  animation: pop-in 240ms var(--ease-out) backwards;
+}
+
+.tour.is-moving .tour-card {
+  transition:
+    opacity 160ms var(--ease),
+    top 420ms var(--ease-out),
+    left 420ms var(--ease-out);
+}
+
+/* While the page scrolls to the next target the card steps aside. */
+.tour.is-scrolling .tour-card {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.tour-head {
+  padding-top: 14px;
+}
+
+.tour-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.tour-count {
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.tour-title {
+  font-size: 15px;
+  line-height: 22px;
+  text-wrap: balance;
+}
+
+.tour-body {
+  text-wrap: pretty;
+}
+
+.tour-text.is-swapping {
+  animation: tour-swap 260ms var(--ease-out) backwards;
+}
+
+@keyframes tour-swap {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.tour-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 12px 12px 12px 16px;
+  border-top: 1px dashed var(--line-soft);
+}
+
+.tour-pips {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.tour-pip {
+  width: 10px;
+  height: 3px;
+  border-radius: var(--r-full);
+  background: var(--border-strong);
+  transition:
+    width var(--dur-color) var(--ease),
+    background-color var(--dur-color) var(--ease);
+}
+
+.tour-pip.is-done {
+  background: var(--fg-muted);
+}
+
+.tour-pip.is-current {
+  width: 18px;
+  background: var(--blue);
+}
+
+.tour-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tour-actions .btn[hidden] {
+  display: none;
+}
+
+/* ---------------------------------------------------------------- closing */
+
+.tour.is-closing .tour-spot,
+.tour.is-closing .tour-card {
+  animation: fade-out 180ms var(--ease) both;
+}
+
+/* ---------------------------------------------------------------- motion */
+
+@media (prefers-reduced-motion: reduce) {
+  .tour.is-ready .tour-spot,
+  .tour.is-ready .tour-card,
+  .tour-text.is-swapping {
+    animation: none !important;
+  }
+  .tour.is-moving .tour-spot,
+  .tour.is-moving .tour-card,
+  .tour .tour-card,
+  .tour-pip {
+    transition: none !important;
+  }
+}

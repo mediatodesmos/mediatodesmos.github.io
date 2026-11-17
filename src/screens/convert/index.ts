@@ -8,6 +8,7 @@ import { button, chipTray, dropZone, emptyState, iconButton, progress, spinner, 
 import { icon } from '../../ui/icons';
 import { go, takePending, type PendingOpen } from '../../app';
 import { getPool, CancelledError } from '../../pipeline/pool';
+import { frameSignature, imageOtsu, looksLikeDrawing, signatureDiff } from '../../pipeline/image';
 import type { RgbaImage, TraceResult } from '../../pipeline/types';
 import { buildImageGraph, type BuiltGraph, type InspectorEntry } from '../../desmos/build';
 import { buildVideoGraph, type BuiltVideo } from '../../desmos/video';
@@ -18,14 +19,19 @@ import { imageViewport, stateWeight, type DesmosState } from '../../desmos/state
 import { decodeImage, isImageFile, isJsonFile, isVideoFile, rasterize, sourceSize, type Drawable } from '../../media/raster';
 import { FileVideo, frameTimes, type VideoSource } from '../../media/video';
 import { SampleVideo, sampleImageFile } from '../../media/samples';
-import { drawShapes, resultToSvgString } from '../../render/shapes';
+import { resultToSvgString } from '../../render/shapes';
+import { PreviewView } from '../../render/preview-view';
+import { startTour } from '../../ui/tour';
+import { getTheme, onThemeChange } from '../../ui/theme';
+import { CONVERT_TOUR, CONVERT_TOUR_ID } from '../tour-steps';
+import { isBetaEnabled, onBetaChange } from '../../account/beta';
 import { getProject, listProjects, MAX_SOURCE_BYTES, newProjectId, saveProject, type Project } from '../../store/projects';
 import { SettingsPanel } from './settings-panel';
 import { Inspector } from './inspector';
 import { Analysis } from './analysis';
 import { Transport, type PlaybackMode } from './transport';
 import { openExportSheet, openShareSheet } from './export-sheet';
-import { BUDGET_RANGE, defaultImageSettings, defaultVideoSettings, traceSettingsOf, type UiSettings, type VideoSettings } from './model';
+import { BUDGET_RANGE, cropOf, defaultImageSettings, defaultVideoSettings, traceSettingsOf, type UiSettings, type VideoSettings } from './model';
 
 type Source =
   | { kind: 'image'; name: string; file?: File; drawable: Drawable; width: number; height: number; bytes?: number }
@@ -53,6 +59,10 @@ class ConvertScreen {
   private graphHost!: HTMLElement;
   private graphStatus!: HTMLElement;
   private previewCanvas!: HTMLCanvasElement;
+  private preview: PreviewView | null = null;
+  private compare: { root: HTMLElement; layer: HTMLElement; pos: number; stopObserve: (() => void) | null } | null = null;
+  /** Desmos is unavailable: the built-in preview stands in for the graph. */
+  private fallback = false;
   private panel!: SettingsPanel;
   private inspector!: Inspector;
   private analysis!: Analysis;
@@ -62,7 +72,9 @@ class ConvertScreen {
   private built: BuiltGraph | null = null;
   private builtVideo: BuiltVideo | null = null;
   private videoFrames: TraceResult[] | null = null;
-  private raster: { res: number; img: RgbaImage } | null = null;
+  private raster: { key: string; img: RgbaImage } | null = null;
+  private betaUnsub: (() => void) | null = null;
+  private themeUnsub: (() => void) | null = null;
   private token = 0;
   private lastRes = 0;
   private playTimer: ReturnType<typeof setInterval> | null = null;
@@ -70,6 +82,8 @@ class ConvertScreen {
   private building = false;
   private cancelBuild = false;
   private projectId: string | null = null;
+  /** The user picked a line source by hand; keep it for the next image. */
+  private lineSourceChosen = false;
   private destroyed = false;
   private openListener = () => this.consumePending();
   private keyListener = (e: KeyboardEvent) => this.onKey(e);
@@ -81,6 +95,9 @@ class ConvertScreen {
     mount(main, this.root);
     window.addEventListener('m2d:open', this.openListener);
     window.addEventListener('keydown', this.keyListener);
+    // Signing in or out switches BETA features on or off: re-apply them.
+    this.betaUnsub = onBetaChange(() => this.onBetaChanged());
+    this.themeUnsub = onThemeChange(() => this.applyDark());
     if (!this.consumePending()) this.renderEmpty();
   }
 
@@ -90,8 +107,11 @@ class ConvertScreen {
     this.cancelBuild = true;
     window.removeEventListener('m2d:open', this.openListener);
     window.removeEventListener('keydown', this.keyListener);
+    this.betaUnsub?.();
+    this.themeUnsub?.();
     this.graph?.destroy();
     this.graph = null;
+    this.preview?.destroy();
     if (this.source?.kind === 'video') this.source.video.dispose();
   }
 
@@ -131,7 +151,11 @@ class ConvertScreen {
       const { width, height } = sourceSize(drawable);
       this.resetSourceState();
       this.source = { kind: 'image', name: file.name, file, drawable, width, height, bytes: file.size };
-      if (!this.settings || this.video) this.settings = defaultImageSettings();
+      if (!this.settings || this.video || !this.lineSourceChosen) {
+        if (!this.settings || this.video) this.settings = defaultImageSettings();
+        // Drawings and anime trace best as ink lines, photos as edges.
+        this.settings.lineSource = looksLikeDrawing(rasterize(drawable, 240)) ? 'ink' : 'edges';
+      }
       this.video = null;
       this.projectId = null;
       await this.renderWorkspace();
@@ -144,7 +168,9 @@ class ConvertScreen {
   private async openVideo(v: VideoSource): Promise<void> {
     this.resetSourceState();
     this.source = { kind: 'video', name: v.name, video: v };
+    // Video frames (anime scenes, live action) trace best as edges.
     this.settings = defaultVideoSettings();
+    this.settings.lineSource = 'edges';
     const end = Math.min(v.duration, 10);
     this.video = { fps: Math.min(12, Math.round(v.nativeFps) || 12), start: 0, end, maxFrames: 240 };
     this.projectId = null;
@@ -203,6 +229,8 @@ class ConvertScreen {
     this.builtVideo = null;
     this.videoFrames = null;
     this.raster = null;
+    // A new source always starts fitted, even if its working width matches the last one.
+    this.lastRes = 0;
     this.token++;
   }
 
@@ -266,6 +294,8 @@ class ConvertScreen {
   private async renderWorkspace(): Promise<void> {
     if (this.destroyed) return;
     const src = this.source!;
+    this.compare?.stopObserve?.();
+    this.compare = null;
     this.ctx.setWide(true);
     this.stopPlayback();
     this.graph?.destroy();
@@ -280,7 +310,9 @@ class ConvertScreen {
       onReset: () => {
         this.settings = src.kind === 'video' ? defaultVideoSettings() : defaultImageSettings();
         this.panel.set(this.settings);
-        this.graph?.setDark(this.settings.dark);
+        this.applyDark();
+        this.updateCropUi();
+        this.raster = null;
         this.retraceNow();
       },
     });
@@ -290,7 +322,9 @@ class ConvertScreen {
       onSelect: (e) => this.applyHighlight(e),
       onSolo: (e) => this.graph?.solo(e ? [e.id] : null),
       onZoom: (e) => {
-        if (e.bbox && this.result) this.graph?.zoomTo(e.bbox, this.result.height);
+        if (!e.bbox || !this.result) return;
+        if (this.previewShown()) this.preview?.zoomTo(e.bbox);
+        else this.graph?.zoomTo(e.bbox, this.result.height);
       },
       onCopyAll: () => this.copyAll(),
     });
@@ -300,16 +334,59 @@ class ConvertScreen {
         this.panel.set(this.settings);
         this.retrace();
       },
+      onCrop: (c) => {
+        this.settings.crop = c;
+        this.raster = null;
+        if (this.builtVideo) this.panel.setVideoStale(true, 'Rebuild video graph');
+        this.retrace();
+      },
     });
 
     // Graph area
     this.graphHost = el('div', { class: 'ws-graph', attrs: { 'aria-label': 'Desmos graph preview' } });
-    this.previewCanvas = el('canvas', { class: 'ws-preview', hidden: true });
+    this.previewCanvas = el('canvas', { class: 'ws-preview', hidden: true, attrs: { 'aria-label': 'Preview drawn by Media to Desmos' } });
+    this.preview?.destroy();
+    this.preview = new PreviewView(this.previewCanvas);
+    this.preview.setDark(this.effectiveDark());
+    this.preview.setAxes(this.settings.axes);
+    this.preview.setStroke(this.settings.strokeWidth);
+    this.fallback = false;
     this.graphStatus = el('div', { class: 'ws-graph-status' }, spinner(20), el('span', null, 'Loading Desmos...'));
     const graphTools = el(
       'div',
       { class: 'ws-graph-tools' },
-      iconButton({ icon: 'zoom-fit', title: 'Fit to view', variant: 'card', size: 'sm', onClick: () => this.graph?.fit() }),
+      iconButton({
+        icon: 'zoom-fit',
+        title: 'Fit to view',
+        variant: 'card',
+        size: 'sm',
+        onClick: () => (this.previewShown() ? this.preview?.fit() : this.graph?.fit()),
+      }),
+      iconButton({
+        icon: 'compare',
+        title: 'Compare with the original',
+        variant: 'card',
+        size: 'sm',
+        onClick: (e) => {
+          const on = this.toggleCompare();
+          (e.currentTarget as HTMLElement).classList.toggle('is-active', on);
+          (e.currentTarget as HTMLElement).setAttribute('aria-pressed', String(on));
+        },
+      }),
+      iconButton({
+        icon: 'axes',
+        title: 'Show axes and numbers',
+        variant: 'card',
+        size: 'sm',
+        active: this.settings.axes,
+        onClick: (e) => {
+          this.settings.axes = !this.settings.axes;
+          this.graph?.setAxes(this.settings.axes);
+          this.preview?.setAxes(this.settings.axes);
+          (e.currentTarget as HTMLElement).classList.toggle('is-active', this.settings.axes);
+          (e.currentTarget as HTMLElement).setAttribute('aria-pressed', String(this.settings.axes));
+        },
+      }),
       iconButton({
         icon: 'contrast',
         title: 'Toggle dark preview',
@@ -317,13 +394,12 @@ class ConvertScreen {
         size: 'sm',
         onClick: () => {
           this.settings.dark = !this.settings.dark;
-          this.graph?.setDark(this.settings.dark);
+          this.applyDark();
           this.panel.set(this.settings);
-          this.root.querySelector('.ws-graph-wrap')?.classList.toggle('is-paper', !this.settings.dark);
         },
       }),
     );
-    const graphWrap = el('div', { class: 'ws-graph-wrap' + (this.settings.dark ? '' : ' is-paper') }, this.graphHost, this.previewCanvas, graphTools, this.graphStatus);
+    const graphWrap = el('div', { class: 'ws-graph-wrap' + (this.effectiveDark() ? '' : ' is-paper') }, this.graphHost, this.previewCanvas, graphTools, this.graphStatus);
 
     // Stats row
     this.statsEls = {
@@ -426,14 +502,19 @@ class ConvertScreen {
       ),
     );
     mount(this.root, this.ws);
+    const ws0 = this.ws;
     if (USING_DEMO_KEY && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
       // Visible reminder for the site owner until a production key is configured.
       console.info('Media to Desmos: using the Desmos demo API key. Set VITE_DESMOS_API_KEY for production.');
     }
 
+    // First visit: a short guided tour of the workspace (remembered once finished or skipped).
+    setTimeout(() => {
+      if (!this.destroyed && this.ws === ws0) startTour(CONVERT_TOUR, { id: CONVERT_TOUR_ID });
+    }, 900);
     // Start Desmos in the background so tracing does not wait for it.
     const ws = this.ws;
-    void GraphView.create(this.graphHost, { dark: this.settings.dark }).then(
+    void GraphView.create(this.graphHost, { dark: this.effectiveDark() }).then(
       (g) => {
         if (this.destroyed || this.ws !== ws) {
           g.destroy();
@@ -441,6 +522,7 @@ class ConvertScreen {
         }
         this.graph = g;
         this.graphStatus.hidden = true;
+        if (this.settings.axes) g.setAxes(true);
         if (this.playback !== 'preview') this.previewCanvas.hidden = true;
         if (this.built) {
           g.load(this.built.state);
@@ -455,11 +537,82 @@ class ConvertScreen {
           el('span', null, err instanceof Error ? err.message : 'Desmos failed to load.'),
           el('span', { class: 'ws-graph-status-sub' }, 'Showing a preview drawn by Media to Desmos. Export still works.'),
           button({ label: 'Retry', icon: 'refresh', variant: 'outline', size: 'sm', onClick: () => void this.retryGraph() }),
+          iconButton({ icon: 'x', title: 'Hide this message', variant: 'ghost', size: 'sm', class: 'ws-graph-status-close', onClick: () => (this.graphStatus.hidden = true) }),
         );
         this.graphStatus.classList.add('is-error');
+        this.fallback = true;
         this.drawFallback();
       },
     );
+  }
+
+  /**
+   * Before/after overlay: the traced input drawn exactly under the graph on the
+   * left of a draggable divider, kept aligned through pans and zooms.
+   */
+  private toggleCompare(): boolean {
+    if (this.compare) {
+      this.compare.stopObserve?.();
+      this.compare.root.remove();
+      this.compare = null;
+      if (this.preview) this.preview.onDraw = null;
+      return false;
+    }
+    const src = this.analysis.sourceCanvas();
+    if (!src) return false;
+    const img = el('canvas', { class: 'ws-cmp-img', width: src.width, height: src.height });
+    img.getContext('2d')!.drawImage(src, 0, 0);
+    const layer = el('div', { class: 'ws-cmp-layer' }, img);
+    const knob = el('span', { class: 'cmp-knob' }, icon('compare', { size: 16 }));
+    const handle = el('div', {
+      class: 'ws-cmp-handle',
+      tabIndex: 0,
+      attrs: { role: 'slider', 'aria-label': 'Before and after divider', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': 50 },
+    }, knob);
+    const root = el('div', { class: 'ws-cmp' }, layer, handle);
+    const state = { root, layer, pos: 50, stopObserve: null as (() => void) | null };
+    const setPos = (p: number) => {
+      state.pos = Math.max(0, Math.min(100, p));
+      root.style.setProperty('--pos', `${state.pos}%`);
+      handle.setAttribute('aria-valuenow', String(Math.round(state.pos)));
+    };
+    setPos(50);
+    let drag = false;
+    handle.addEventListener('pointerdown', (e) => {
+      drag = true;
+      handle.setPointerCapture(e.pointerId);
+      e.stopPropagation();
+    });
+    handle.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const r = root.getBoundingClientRect();
+      setPos(((e.clientX - r.left) / r.width) * 100);
+    });
+    handle.addEventListener('pointerup', () => (drag = false));
+    handle.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowLeft') setPos(state.pos - 2);
+      else if (e.key === 'ArrowRight') setPos(state.pos + 2);
+      else return;
+      e.preventDefault();
+    });
+    this.root.querySelector('.ws-graph-wrap')?.appendChild(root);
+    this.compare = state;
+    const align = () => {
+      const res = this.result;
+      if (!res) return;
+      const rect = this.previewShown() ? this.preview?.imageRect() : this.graph?.imageRect(res.width, res.height);
+      if (!rect) return;
+      Object.assign(img.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
+    };
+    if (this.preview) this.preview.onDraw = align;
+    if (this.graph) state.stopObserve = this.graph.onViewChange(align);
+    align();
+    return true;
+  }
+
+  /** The built-in preview is on screen (Desmos unavailable, or smooth video preview). */
+  private previewShown(): boolean {
+    return !this.previewCanvas.hidden;
   }
 
   private async retryGraph(): Promise<void> {
@@ -467,9 +620,11 @@ class ConvertScreen {
     this.graphStatus.classList.remove('is-error');
     this.graphStatus.append(spinner(20), el('span', null, 'Loading Desmos...'));
     try {
-      this.graph = await GraphView.create(this.graphHost, { dark: this.settings.dark });
+      this.graph = await GraphView.create(this.graphHost, { dark: this.effectiveDark() });
       this.graphStatus.hidden = true;
-      this.previewCanvas.hidden = true;
+      this.fallback = false;
+      if (this.playback !== 'preview') this.previewCanvas.hidden = true;
+      if (this.settings.axes) this.graph.setAxes(true);
       if (this.built) this.graph.load(this.built.state);
     } catch (err) {
       clear(this.graphStatus);
@@ -480,8 +635,9 @@ class ConvertScreen {
 
   /** Without Desmos (offline / blocked) show our own drawing of the shapes. */
   private drawFallback(): void {
-    if (!this.result) return;
-    this.drawPreviewFrame(this.result);
+    const frame = this.videoFrames && this.transport ? this.videoFrames[this.transport.current - 1] : this.result;
+    if (!frame) return;
+    this.drawPreviewFrame(frame);
   }
 
   private pickNew(): void {
@@ -498,12 +654,20 @@ class ConvertScreen {
   private onSettings(p: Partial<UiSettings>): void {
     Object.assign(this.settings, p);
     if ('dark' in p) {
-      this.graph?.setDark(this.settings.dark);
-      this.root.querySelector('.ws-graph-wrap')?.classList.toggle('is-paper', !this.settings.dark);
-      if (this.playback === 'preview' && this.videoFrames) this.drawPreviewFrame(this.videoFrames[(this.transport?.current ?? 1) - 1]);
+      this.applyDark();
       return;
     }
-    if ('strokeWidth' in p || 'notes' in p || 'epicycles' in p) {
+    if ('color' in p) this.applyDark();
+    if ('cropOn' in p || 'cropAspect' in p || 'crop' in p) {
+      this.updateCropUi();
+      if ('cropOn' in p || 'crop' in p) {
+        this.raster = null;
+        if (this.builtVideo) this.panel.setVideoStale(true, 'Rebuild video graph');
+        this.retrace();
+      }
+      return;
+    }
+    if ((('strokeWidth' in p || 'notes' in p || 'epicycles' in p || 'mergeSmall' in p) && !('resolution' in p))) {
       // Output-only changes: rebuild the graph without re-tracing.
       if (this.source?.kind === 'video' && this.videoFrames) {
         this.panel.setVideoStale(true, 'Rebuild video graph');
@@ -512,6 +676,7 @@ class ConvertScreen {
     }
     if (this.source?.kind === 'video' && this.builtVideo) this.panel.setVideoStale(true, 'Rebuild video graph');
     // Shape ids are renumbered on every trace; a new style makes an old selection meaningless.
+    if ('lineSource' in p) this.lineSourceChosen = true;
     if ('mode' in p || 'lineSource' in p || 'resolution' in p) {
       this.inspector.clearSolo();
       if (this.inspector.selection) this.inspector.select(null);
@@ -531,17 +696,61 @@ class ConvertScreen {
   private async currentImage(): Promise<RgbaImage | null> {
     const src = this.source;
     const res = this.settings.resolution;
+    const crop = cropOf(this.settings);
     if (!src) return null;
     if (src.kind === 'image') {
-      if (!this.raster || this.raster.res !== res) this.raster = { res, img: rasterize(src.drawable, res) };
+      const key = `${res}|${crop ? [crop.x, crop.y, crop.w, crop.h].join(',') : ''}`;
+      if (!this.raster || this.raster.key !== key) this.raster = { key, img: rasterize(src.drawable, res, crop) };
       return this.raster.img;
     }
     if (src.kind === 'video') {
-      const v = this.video!;
-      const probe = v.start + Math.min(v.end - v.start, 1) * 0.5;
-      return src.video.frameAt(probe, res);
+      return src.video.frameAt(this.probeTime(), res, crop);
     }
     return null;
+  }
+
+  private probeTime(): number {
+    const v = this.video!;
+    return v.start + Math.min(v.end - v.start, 1) * 0.5;
+  }
+
+  /** The preview is dark unless the user chose paper, or In Color is on (colours need paper). */
+  private effectiveDark(): boolean {
+    return this.settings.dark && getTheme() === 'dark' && !(isBetaEnabled() && this.settings.color);
+  }
+
+  private applyDark(): void {
+    const dark = this.effectiveDark();
+    this.graph?.setDark(dark);
+    this.preview?.setDark(dark);
+    this.root.querySelector('.ws-graph-wrap')?.classList.toggle('is-paper', !dark);
+  }
+
+  /** BETA crop: show the whole source with the crop rectangle while cropping is on. */
+  private updateCropUi(): void {
+    const src = this.source;
+    if (!src || src.kind === 'state' || !this.settings.cropOn || !isBetaEnabled()) {
+      this.analysis?.setCropMode(false, null, null, 'free');
+      return;
+    }
+    const show = (img: RgbaImage) => {
+      const c = document.createElement('canvas');
+      c.width = img.width;
+      c.height = img.height;
+      c.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(img.data), img.width, img.height), 0, 0);
+      this.analysis.setCropMode(this.settings.cropOn && isBetaEnabled(), c, this.settings.crop, this.settings.cropAspect);
+    };
+    if (src.kind === 'image') show(rasterize(src.drawable, 640));
+    else void src.video.frameAt(this.probeTime(), 480).then(show);
+  }
+
+  private onBetaChanged(): void {
+    if (!this.source || this.source.kind === 'state') return;
+    this.panel.set(this.settings);
+    this.applyDark();
+    this.updateCropUi();
+    this.raster = null;
+    this.retrace();
   }
 
   private async retraceNow(): Promise<void> {
@@ -568,17 +777,23 @@ class ConvertScreen {
   private applyResult(res: TraceResult, keepView: boolean): void {
     this.result = res;
     const s = this.settings;
-    const usesThr = s.mode === 'fill' || s.lineSource !== 'edges';
+    const usesThr = s.mode === 'fill' || s.lineSource === 'centerline' || s.lineSource === 'contours';
     this.panel.setAutoThreshold(res.stats.threshold);
     this.analysis.setResult(res, {
       threshold: usesThr ? (s.threshold >= 0 ? s.threshold : res.stats.threshold) : -1,
       showHistogram: usesThr,
-      bitmapLabel: s.mode !== 'fill' && s.lineSource === 'edges' ? 'Edges' : 'Bitmap',
+      bitmapLabel: s.mode !== 'fill' && s.lineSource === 'edges' ? 'Edges' : s.mode !== 'fill' && s.lineSource === 'ink' ? 'Ink' : 'Bitmap',
     });
     // A built video graph stays on screen; the probe only updates the analysis card.
     if (this.source?.kind === 'video' && this.builtVideo) return;
     const name = this.source?.name ?? 'Untitled';
-    this.built = buildImageGraph(res, { strokeWidth: s.strokeWidth, notes: s.notes, name, epicycles: s.epicycles });
+    this.built = buildImageGraph(res, {
+      strokeWidth: s.strokeWidth,
+      notes: s.notes,
+      name,
+      epicycles: s.epicycles,
+      mergeBelow: s.mergeSmall ? Math.max(14, Math.round(s.resolution / 30)) : 0,
+    });
     if (this.source?.kind === 'video') this.panel.setVideoEstimate(this.built.bytes);
     this.inspector.setEntries(this.built.entries);
     if (this.graph) {
@@ -636,15 +851,11 @@ class ConvertScreen {
   }
 
   private applyHighlight(e: InspectorEntry | null): void {
+    const shapeIds = e?.shapeId ? [e.shapeId] : [];
+    this.analysis.setHighlight(shapeIds);
+    this.preview?.setHighlight(shapeIds);
     if (!this.graph) return;
-    if (!e) {
-      this.graph.highlight([]);
-      this.analysis.setHighlight([]);
-      return;
-    }
-    const ids = e.kind === 'data' ? [] : [e.id];
-    this.graph.highlight(ids);
-    this.analysis.setHighlight(e.shapeId ? [e.shapeId] : []);
+    this.graph.highlight(e && e.kind !== 'data' ? [e.id] : []);
   }
 
   /** Mass copy: every equation as LaTeX lines (Desmos splits a multi-line paste into expressions). */
@@ -685,10 +896,31 @@ class ConvertScreen {
     let done = 0;
     const t0 = performance.now();
     try {
+      // Held frames (anime often repeats a drawing for 2-3 frames) reuse the previous trace,
+      // and the automatic threshold is smoothed over time so the drawing does not flicker.
+      const dupOf = new Map<number, number>();
+      let lastSig: Float32Array | null = null;
+      let lastKept = -1;
+      let ema = -1;
+      const autoThr = ts.threshold < 0;
       for (let i = 0; i < times.length; i++) {
         if (this.cancelBuild || this.destroyed) throw new CancelledError();
-        const img = await src.frameAt(times[i], ts.resolution);
-        const job = pool.run(img, ts).then((r) => {
+        const img = await src.frameAt(times[i], ts.resolution, cropOf(this.settings));
+        const sig = frameSignature(img);
+        if (lastSig && lastKept >= 0 && signatureDiff(sig, lastSig) < 1.2) {
+          dupOf.set(i, lastKept);
+          done++;
+          continue;
+        }
+        lastSig = sig;
+        lastKept = i;
+        let frameSettings = ts;
+        if (autoThr) {
+          const o = imageOtsu(img);
+          ema = ema < 0 ? o : ema * 0.7 + o * 0.3;
+          frameSettings = { ...ts, threshold: Math.round(ema) };
+        }
+        const job = pool.run(img, frameSettings).then((r) => {
           results[i] = r;
           done++;
           const elapsed = (performance.now() - t0) / 1000;
@@ -700,6 +932,7 @@ class ConvertScreen {
       }
       await Promise.all(inflight);
       if (this.cancelBuild || this.destroyed) throw new CancelledError();
+      for (const [i, j] of dupOf) results[i] = results[j];
       prog.set(1, 'Writing the Desmos graph');
       await new Promise((r) => setTimeout(r, 20));
       const builtV = buildVideoGraph(results, { fps: v.fps, strokeWidth: this.settings.strokeWidth, name: this.source.name });
@@ -745,7 +978,7 @@ class ConvertScreen {
   }
 
   private showFrame(f: number): void {
-    if (this.playback === 'preview' && this.videoFrames) {
+    if ((this.playback === 'preview' || this.fallback) && this.videoFrames) {
       this.previewCanvas.hidden = false;
       this.drawPreviewFrame(this.videoFrames[f - 1]);
     } else this.graph?.setFrame(f);
@@ -771,24 +1004,10 @@ class ConvertScreen {
   }
 
   private drawPreviewFrame(res: TraceResult | undefined): void {
-    if (!res) return;
-    const c = this.previewCanvas;
-    const host = this.graphHost.getBoundingClientRect();
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    c.width = Math.max(1, Math.round(host.width * dpr));
-    c.height = Math.max(1, Math.round(host.height * dpr));
-    c.hidden = false;
-    const g = c.getContext('2d')!;
-    const dark = this.settings.dark;
-    g.fillStyle = dark ? '#121212' : '#fff';
-    g.fillRect(0, 0, c.width, c.height);
-    const margin = 0.92;
-    const s = Math.min(c.width / res.width, c.height / res.height) * margin;
-    g.save();
-    g.translate((c.width - res.width * s) / 2, (c.height - res.height * s) / 2);
-    g.scale(s, s);
-    drawShapes(g, res.shapes, { ink: dark ? '#ededed' : '#000', strokeWidth: (this.settings.strokeWidth * dpr) / s });
-    g.restore();
+    if (!res || !this.preview) return;
+    this.previewCanvas.hidden = false;
+    this.preview.setStroke(this.settings.strokeWidth);
+    this.preview.setResult(res);
   }
 
   // ------------------------------------------------------------------ save / share / export

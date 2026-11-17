@@ -5,6 +5,9 @@ import './styles/home.css';
 import './styles/app.css';
 
 import { mountShell } from './ui/shell';
+import { applyStoredTheme } from './ui/theme';
+
+applyStoredTheme();
 import { renderHome } from './screens/home';
 import { renderConvert } from './screens/convert';
 import { renderGallery } from './screens/gallery';
@@ -12,7 +15,7 @@ import { renderLive } from './screens/live';
 import { renderView } from './screens/view';
 import { renderHandoff } from './screens/handoff';
 import { go, openInConverter, REPO_URL, SITE_NAME } from './app';
-import { samplePreview } from './screens/samples-preview';
+import { compareExamples, samplePreview } from './screens/samples-preview';
 
 type Cleanup = void | (() => void);
 
@@ -93,6 +96,7 @@ function route(): void {
           openFile: (file) => openInConverter({ type: 'file', file }),
           trySample: (kind) => openInConverter({ type: 'sample', kind }),
           samplePreview,
+          compareExamples,
         });
         break;
       case 'convert':

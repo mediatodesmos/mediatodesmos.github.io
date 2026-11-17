@@ -131,3 +131,70 @@ export function toPreview(bin: Uint8Array): Uint8Array {
   for (let i = 0; i < bin.length; i++) out[i] = bin[i] ? 255 : 0;
   return out;
 }
+
+/** Share of pixels whose tone matches their 5x5 neighbourhood: high for drawings/anime, low for photos. */
+export function flatness(img: RgbaImage): number {
+  const g = toGray(img);
+  const { width: w, height: h } = img;
+  // 5x5 box mean via running sums (kept local to avoid a module cycle with ink.ts).
+  const r = 2;
+  let flat = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let s = 0, n = 0;
+      for (let dy = -r; dy <= r; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        for (let dx = -r; dx <= r; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= w) continue;
+          s += g[yy * w + xx];
+          n++;
+        }
+      }
+      if (Math.abs(g[y * w + x] - s / n) < 2.5) flat++;
+    }
+  }
+  return flat / (w * h);
+}
+
+/** True when the picture looks like a drawing, comic or anime frame rather than a photo. */
+export function looksLikeDrawing(img: RgbaImage): boolean {
+  if (flatness(img) <= 0.4) return false;
+  // Drawings sit on light paper; full-colour anime scenes and photos mostly do not.
+  const g = toGray(img);
+  let bright = 0;
+  for (let i = 0; i < g.length; i++) if (g[i] > 215) bright++;
+  return bright / g.length > 0.25;
+}
+
+/** A tiny 32x18 luminance thumbnail, for spotting repeated (held) video frames. */
+export function frameSignature(img: RgbaImage): Float32Array {
+  const SW = 32, SH = 18;
+  const out = new Float32Array(SW * SH);
+  const cnt = new Float32Array(SW * SH);
+  const { width: w, height: h, data } = img;
+  for (let y = 0; y < h; y++) {
+    const sy = Math.min(SH - 1, Math.floor((y * SH) / h));
+    for (let x = 0; x < w; x++) {
+      const sx = Math.min(SW - 1, Math.floor((x * SW) / w));
+      const p = (y * w + x) * 4;
+      out[sy * SW + sx] += 0.2126 * data[p] + 0.7152 * data[p + 1] + 0.0722 * data[p + 2];
+      cnt[sy * SW + sx]++;
+    }
+  }
+  for (let i = 0; i < out.length; i++) out[i] /= cnt[i] || 1;
+  return out;
+}
+
+/** Mean absolute difference between two signatures (0..255). */
+export function signatureDiff(a: Float32Array, b: Float32Array): number {
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d += Math.abs(a[i] - b[i]);
+  return d / a.length;
+}
+
+/** Otsu threshold of an RGBA image (for steadying video thresholds frame to frame). */
+export function imageOtsu(img: RgbaImage): number {
+  return otsu(histogram(toGray(img)));
+}

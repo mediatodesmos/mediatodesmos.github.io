@@ -15,7 +15,11 @@ export interface FourierFit {
   error: number;
 }
 
-export function fourierFit(rawPts: number[], closed: boolean, maxTerms: number): FourierFit {
+/**
+ * @param targetError when set, use the fewest terms (up to maxTerms) whose mean
+ *   distance to the traced path is at most this many pixels
+ */
+export function fourierFit(rawPts: number[], closed: boolean, maxTerms: number, targetError?: number): FourierFit {
   let pts = rawPts;
   if (!closed) {
     // out and back: p0..pn, p(n-1)..p1
@@ -55,24 +59,35 @@ export function fourierFit(rawPts: number[], closed: boolean, maxTerms: number):
   // Always keep k = 0 (the centre), then the biggest circles.
   const zero = cands.find((c) => c.k === 0)!;
   const rest = cands.filter((c) => c.k !== 0).sort((a, b) => b.mag - a.mag);
-  const kept = [zero, ...rest.slice(0, Math.max(0, maxTerms - 1))];
-  // Sort by |k| so the epicycle chain grows from slow to fast.
-  kept.sort((a, b) => Math.abs(a.k) - Math.abs(b.k) || a.k - b.k);
 
-  const fit: FourierFit = {
-    freq: kept.map((c) => c.k),
-    re: kept.map((c) => c.re),
-    im: kept.map((c) => c.im),
-    error: 0,
+  const build = (terms: number): FourierFit => {
+    const kept = [zero, ...rest.slice(0, Math.max(0, terms - 1))];
+    // Sort by |k| so the epicycle chain grows from slow to fast.
+    kept.sort((a, b) => Math.abs(a.k) - Math.abs(b.k) || a.k - b.k);
+    const fit: FourierFit = { freq: kept.map((c) => c.k), re: kept.map((c) => c.re), im: kept.map((c) => c.im), error: 0 };
+    let err = 0;
+    for (let n = 0; n < N; n++) {
+      const [x, y] = fourierAt(fit, n / N);
+      err += Math.hypot(x - s[2 * n], y - s[2 * n + 1]);
+    }
+    fit.error = err / N;
+    return fit;
   };
-  // Mean reconstruction error at the sample points.
-  let err = 0;
-  for (let n = 0; n < N; n++) {
-    const [x, y] = fourierAt(fit, n / N);
-    err += Math.hypot(x - s[2 * n], y - s[2 * n + 1]);
+
+  if (!(targetError && targetError > 0)) return build(maxTerms);
+  // Fewest circles whose mean error meets the target (error falls as terms grow).
+  let best = build(maxTerms);
+  if (best.error > targetError) return best;
+  let lo = 2, hi = maxTerms;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    const f = build(mid);
+    if (f.error <= targetError) {
+      hi = mid;
+      best = f;
+    } else lo = mid + 1;
   }
-  fit.error = err / N;
-  return fit;
+  return best.freq.length === lo ? best : build(lo);
 }
 
 export function fourierAt(f: { freq: number[]; re: number[]; im: number[] }, t: number): [number, number] {

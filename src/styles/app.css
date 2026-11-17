@@ -1120,3 +1120,117 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+.ws-graph-status.is-error {
+  padding-right: 44px;
+}
+
+.ws-graph-status-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
+/* Before/after overlay in the workspace: original under the graph, left of the divider. */
+.ws-cmp {
+  --pos: 50%;
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.ws-cmp-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  clip-path: inset(0 calc(100% - var(--pos)) 0 0);
+}
+
+.ws-cmp-img {
+  position: absolute;
+  image-rendering: auto;
+}
+
+.ws-cmp-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--pos);
+  width: 24px;
+  margin-left: -12px;
+  pointer-events: auto;
+  cursor: ew-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.ws-cmp-handle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 11px;
+  width: 2px;
+  background: var(--blue);
+}
+
+.ws-cmp-handle .cmp-knob {
+  left: 12px;
+}
+
+.ws-cmp-handle:focus-visible .cmp-knob {
+  box-shadow: 0 0 0 3px var(--ring-soft);
+}
+
+/* BETA crop tools */
+.crop-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.crop-tools .btn {
+  align-self: flex-start;
+}
+
+.an-canvas.is-cropping {
+  cursor: crosshair;
+  touch-action: none;
+}
+
+/* Cloud projects (BETA) */
+.gal-cloud {
+  margin-top: 48px;
+  padding-top: 32px;
+  border-top: 1px dashed var(--border);
+}
+
+.gal-cloud[hidden] {
+  display: none;
+}
+
+.gal-cloud-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.gal-cloud-head .field-hint {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.gal-cloud-title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: 26px;
+  color: var(--fg-strong);
+}
+
+.gal-cloud .gal-grid {
+  margin-top: 20px;
+}

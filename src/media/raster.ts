@@ -18,8 +18,20 @@ export function fitSize(w: number, h: number, longSide: number): { width: number
 
 let scratch: HTMLCanvasElement | null = null;
 
-export function rasterize(src: Drawable, longSide: number): RgbaImage {
-  const { width: sw, height: sh } = sourceSize(src);
+/** A crop rectangle in fractions of the source (0..1). */
+export interface CropRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export function rasterize(src: Drawable, longSide: number, crop?: CropRect | null): RgbaImage {
+  const full = sourceSize(src);
+  const sx = crop ? Math.round(crop.x * full.width) : 0;
+  const sy = crop ? Math.round(crop.y * full.height) : 0;
+  const sw = crop ? Math.max(1, Math.round(crop.w * full.width)) : full.width;
+  const sh = crop ? Math.max(1, Math.round(crop.h * full.height)) : full.height;
   const { width, height } = fitSize(sw, sh, longSide);
   if (!scratch) scratch = document.createElement('canvas');
   scratch.width = width;
@@ -28,7 +40,7 @@ export function rasterize(src: Drawable, longSide: number): RgbaImage {
   g.imageSmoothingEnabled = true;
   g.imageSmoothingQuality = 'high';
   g.clearRect(0, 0, width, height);
-  g.drawImage(src as CanvasImageSource, 0, 0, width, height);
+  g.drawImage(src as CanvasImageSource, sx, sy, sw, sh, 0, 0, width, height);
   const id = g.getImageData(0, 0, width, height);
   return { width, height, data: id.data };
 }

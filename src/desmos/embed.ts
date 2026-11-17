@@ -18,15 +18,31 @@ export const USING_DEMO_KEY = DESMOS_API_KEY === DEMO_KEY;
 
 let loading: Promise<typeof Desmos> | null = null;
 
+/** Give up on Desmos after this long and fall back to the built-in preview. */
+const LOAD_TIMEOUT_MS = 8000;
+
+/** `?nodesmos` in the URL simulates a blocked Desmos (for testing the fallback). */
+const FORCE_FAIL = typeof location !== 'undefined' && /[?&]nodesmos\b/.test(location.search);
+
 export function loadDesmos(): Promise<typeof Desmos> {
+  if (FORCE_FAIL) return Promise.reject(new Error('Desmos is turned off for this page (?nodesmos).'));
   if (window.Desmos) return Promise.resolve(window.Desmos);
   if (!loading) {
     loading = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        loading = null;
+        reject(new Error('The Desmos calculator is taking too long to load.'));
+      }, LOAD_TIMEOUT_MS);
       const s = document.createElement('script');
       s.src = `https://www.desmos.com/api/${DESMOS_API_VERSION}/calculator.js?apiKey=${encodeURIComponent(DESMOS_API_KEY)}`;
       s.async = true;
-      s.onload = () => (window.Desmos ? resolve(window.Desmos) : reject(new Error('The Desmos calculator loaded but did not start.')));
+      s.onload = () => {
+        clearTimeout(timer);
+        if (window.Desmos) resolve(window.Desmos);
+        else reject(new Error('The Desmos calculator loaded but did not start.'));
+      };
       s.onerror = () => {
+        clearTimeout(timer);
         loading = null;
         s.remove();
         reject(new Error('Could not load the Desmos calculator. Check your connection, or allow desmos.com in your ad blocker.'));
@@ -55,6 +71,7 @@ export class GraphView {
   private highlighted: string[] = [];
   private soloIds: string[] | null = null;
   private resizeObs: ResizeObserver;
+  private axes = false;
   /** Base style per expression id (to restore after highlight). */
   private base = new Map<string, { color: string; lineWidth?: string }>();
 
@@ -100,6 +117,27 @@ export class GraphView {
     this.calc.setState(structuredClone(state));
     if (keep) this.calc.setMathBounds({ left: keep.left, right: keep.right, bottom: keep.bottom, top: keep.top });
     else this.fit(state.graph.viewport);
+    if (this.axes) this.setAxes(true);
+  }
+
+  /** Where an image of w x h px (Desmos x 0..w, y 0..h) sits in the container, in CSS px. */
+  imageRect(w: number, h: number): { left: number; top: number; width: number; height: number } {
+    const b = this.calc.graphpaperBounds.mathCoordinates;
+    const r = this.container.getBoundingClientRect();
+    const sx = r.width / (b.right - b.left), sy = r.height / (b.top - b.bottom);
+    return { left: (0 - b.left) * sx, top: (b.top - h) * sy, width: w * sx, height: h * sy };
+  }
+
+  /** Run cb whenever the visible region changes (pan, zoom, resize). */
+  onViewChange(cb: () => void): () => void {
+    this.calc.observe('graphpaperBounds', cb);
+    return () => this.calc.unobserve('graphpaperBounds');
+  }
+
+  /** Show Desmos' grid, axes and numbers in the preview (the exported state is untouched). */
+  setAxes(on: boolean): void {
+    this.axes = on;
+    this.calc.updateSettings({ showGrid: on, showXAxis: on, showYAxis: on, xAxisNumbers: on, yAxisNumbers: on });
   }
 
   get current(): DesmosState | null {

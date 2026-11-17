@@ -3,6 +3,7 @@
  *
  *   outline/edges      : Canny -> thin -> chains -> smooth -> cubic Beziers
  *   outline/centerline : threshold -> thin -> chains -> smooth -> cubic Beziers
+ *   outline/ink        : adaptive ink map (darker than surroundings) -> thin -> chains -> Beziers
  *   outline/contours   : threshold contours (marching squares) -> cubic Beziers
  *   fill               : threshold contours -> polygons with holes
  *   fourier            : contours or chains -> Fourier series
@@ -16,6 +17,12 @@ import { groupRings, marchingSquares, bboxOf, signedArea, type Ring } from './co
 import { rdpClosed, smooth } from './simplify';
 import { fitBeziers } from './bezier';
 import { fourierFit } from './fourier';
+import { inkMap, removeSmallComponents } from './ink';
+import { joinChains, pruneSpurs } from './chainops';
+import { colorAt, hex, quantize, stackedLayerField, type Palette } from './color';
+import { closeGaps, enhanceGray, median3 } from './enhance';
+import { sampleSegs } from './bezier';
+import { sampleFourier } from './fourier';
 import type { FourierShape, RegionShape, RgbaImage, Shape, StrokeShape, TraceResult, TraceSettings } from './types';
 import { shapeCost } from './types';
 
@@ -34,7 +41,9 @@ interface Polyline {
 export function trace(img: RgbaImage, s: TraceSettings, opts: TraceOptions = {}): TraceResult {
   const t0 = now();
   const { width: w, height: h } = img;
-  const gray = toGray(img);
+  let gray = toGray(img);
+  if (s.enhance) gray = enhanceGray(gray, w, h);
+  if (s.lineCleanup && (s.lineSource === 'ink' || s.lineSource === 'centerline') && s.mode !== 'fill') gray = median3(gray, w, h);
   const hist = histogram(gray);
   const autoThr = otsu(hist);
   const thr = s.threshold >= 0 ? s.threshold + 0.5 : autoThr;
@@ -43,8 +52,39 @@ export function trace(img: RgbaImage, s: TraceSettings, opts: TraceOptions = {})
   let shapes: Shape[] = [];
 
   const needsContours = s.mode === 'fill' || s.lineSource === 'contours';
+  let palette: Palette | null = null;
 
-  if (needsContours) {
+  if (s.color && s.mode === 'fill') {
+    // In Color fill: stacked colour layers, background rectangle first.
+    palette = quantize(img, s.colors);
+    const minArea = s.minSize * s.minSize * 0.5;
+    shapes = [
+      {
+        kind: 'region',
+        id: 0,
+        rings: [[0, 0, w, 0, w, h, 0, h]],
+        area: w * h,
+        bbox: [0, 0, w, h],
+        color: hex(palette.colors[0]),
+        layer: 0,
+      },
+    ];
+    for (let layer = 1; layer < palette.colors.length; layer++) {
+      let field = stackedLayerField(palette, layer);
+      field = gaussianBlur(field, w, h, Math.max(0.5, s.blur));
+      const rings = marchingSquares(field, w, h, 127.5, true);
+      for (const r of regionsFromRings(rings, minArea, Math.max(1, s.smoothing * 1.3))) {
+        r.color = hex(palette.colors[layer]);
+        r.layer = layer;
+        shapes.push(r);
+      }
+    }
+    if (opts.preview) {
+      const pv = new Uint8Array(w * h);
+      for (let i = 0; i < pv.length; i++) pv[i] = Math.round((palette.labels[i] / Math.max(1, palette.colors.length - 1)) * 255);
+      preview = pv;
+    }
+  } else if (needsContours) {
     const field = s.blur > 0.05 ? gaussianBlur(gray, w, h, s.blur) : gray;
     if (opts.preview) preview = toPreview(binarize(field, thr, s.invert));
     // Foreground is dark (value < thr) unless inverted.
@@ -63,30 +103,57 @@ export function trace(img: RgbaImage, s: TraceSettings, opts: TraceOptions = {})
     if (s.lineSource === 'centerline') {
       const field = s.blur > 0.05 ? gaussianBlur(gray, w, h, s.blur) : gray;
       thinMap = thin(binarize(field, thr, s.invert), w, h);
+    } else if (s.lineSource === 'ink') {
+      // Drawings and anime: pixels clearly darker than their surroundings, thinned to centre lines.
+      const field = s.blur > 0.05 ? gaussianBlur(gray, w, h, s.blur) : gray;
+      const radius = Math.max(3, Math.round(Math.max(w, h) / 60));
+      const ink = inkMap(field, w, h, { radius, detail: s.edgeDetail, invert: s.invert });
+      removeSmallComponents(ink, w, h, Math.max(3, s.minSize) * (s.lineCleanup ? 3 : 1));
+      thinMap = thin(s.lineCleanup ? closeGaps(ink, w, h, 1) : ink, w, h);
     } else {
       // Edge detection always needs some smoothing on top of the user's blur.
       const { edges } = canny(gray, w, h, { sigma: 0.6 + s.blur, detail: s.edgeDetail });
       thinMap = thin(edges, w, h);
     }
     if (opts.preview) preview = toPreview(thinMap);
-    const chains = traceChains(thinMap, w, h, s.minSize);
+    // Short pieces survive tracing so they can be joined; the length filter runs after joining.
+    let chains = traceChains(thinMap, w, h, 2);
+    chains = pruneSpurs(chains, Math.max(4, s.minSize));
+    chains = joinChains(chains);
+    chains = chains.filter((c) => pathLength(c.pts, c.closed) >= s.minSize);
     const lines = chains.map((c: Chain) => ({ pts: c.pts, closed: c.closed }));
     shapes = s.mode === 'fourier' ? fourierShapes(lines, s) : strokeShapes(lines, s, 1);
   }
 
+  // In Color outline / Fourier: each shape takes the (palette-snapped) colour under it.
+  if (s.color && s.mode !== 'fill') {
+    palette = quantize(img, s.colors);
+    const pal = palette.colors;
+    for (const sh of shapes) {
+      if (sh.kind === 'stroke') sh.color = colorAt(img, sampleSegs(sh.segs, 3), pal);
+      else if (sh.kind === 'fourier') sh.color = colorAt(img, sampleFourier(sh, 48), pal);
+    }
+  }
+
   // Budget: keep the most important shapes that fit.
   const importance = (sh: Shape) =>
-    sh.kind === 'region' ? Math.abs(sh.area) + 1 : sh.length;
+    sh.kind === 'region' ? (sh.layer === 0 ? Infinity : Math.abs(sh.area) + 1) : sh.length;
   const sorted = shapes.slice().sort((a, b) => importance(b) - importance(a));
   const kept: Shape[] = [];
   let used = 0;
   let dropped = 0;
+  // Colour layers have long outlines; polygons are cheap for Desmos, so allow three times the vertices.
+  const budget = palette && s.mode === 'fill' ? Math.min(60000, s.budget * 3) : s.budget;
   for (const sh of sorted) {
     const c = shapeCost(sh);
-    if (used + c <= s.budget) {
+    if (used + c <= budget) {
       kept.push(sh);
       used += c;
     } else dropped++;
+  }
+  // Colour layers must be drawn bottom to top; within a layer, biggest first.
+  if (palette && s.mode === 'fill') {
+    kept.sort((a, b) => ((a.kind === 'region' ? a.layer ?? 0 : 0) - (b.kind === 'region' ? b.layer ?? 0 : 0)) || importance(b) - importance(a));
   }
   kept.forEach((sh, i) => (sh.id = i + 1));
 
@@ -143,8 +210,9 @@ function fourierShapes(lines: Polyline[], s: TraceSettings): FourierShape[] {
   for (const line of lines) {
     const length = pathLength(line.pts, line.closed);
     // Small shapes need few circles; big ones get up to the cap.
-    const terms = Math.max(3, Math.min(s.fourierTerms, Math.ceil(length / 10)));
-    const fit = fourierFit(line.pts, line.closed, terms);
+    // Up to the cap, but only as many circles as it takes to stay within the curve tolerance.
+    const cap = Math.max(3, Math.min(s.fourierTerms, Math.ceil(length / 6)));
+    const fit = fourierFit(line.pts, line.closed, cap, Math.max(0.4, s.smoothing * 0.75));
     out.push({
       kind: 'fourier',
       id: 0,

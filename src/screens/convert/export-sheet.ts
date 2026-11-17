@@ -1,7 +1,7 @@
 /** The export dialog: four ways to get the graph into desmos.com, plus share links. */
 
 import { el, fmtBytes } from '../../ui/dom';
-import { button, codeBlock, segmented, sheet, toast } from '../../ui/components';
+import { button, codeBlock, segmented, sheet, toast, toggle } from '../../ui/components';
 import { icon } from '../../ui/icons';
 import type { DesmosState } from '../../desmos/state';
 import { bookmarkletHref, consoleSnippet, copyText, downloadText, latexLines, slug, stateJson } from '../../desmos/export';
@@ -19,9 +19,26 @@ export interface ExportInput {
 
 const BIG = 2_500_000;
 
+/** A copy of the state with Desmos' grid, axes and axis numbers turned on. */
+export function withAxes(state: DesmosState): DesmosState {
+  return { ...state, graph: { ...state.graph, showGrid: true, showXAxis: true, showYAxis: true, xAxisNumbers: true, yAxisNumbers: true } };
+}
+
 export function openExportSheet(input: ExportInput): void {
-  const { name, state } = input;
+  const { name } = input;
+  const baseState = input.state;
+  let state = baseState;
   stageHandoff(name, state).catch(() => undefined);
+  const axesToggle = toggle({
+    label: 'Include axes & grid',
+    value: false,
+    hint: 'Off keeps the drawing on a clean, blank page in Desmos.',
+    onChange: (v) => {
+      state = v ? withAxes(baseState) : baseState;
+      stageHandoff(name, state).catch(() => undefined);
+      renderRoute();
+    },
+  });
 
   let route: Route = 'bookmark';
   const body = el('div', { class: 'xp-body' });
@@ -125,7 +142,7 @@ export function openExportSheet(input: ExportInput): void {
   const dlg = sheet({
     title: 'Export to Desmos',
     description: name,
-    content: el('div', { class: 'xp' }, weight, tabs.el, body),
+    content: el('div', { class: 'xp' }, weight, axesToggle.el, tabs.el, body),
     width: 620,
   });
   dlg.open();

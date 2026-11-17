@@ -23,6 +23,8 @@ declare namespace Desmos {
     updateSettings(settings: Record<string, unknown>): void;
     asyncScreenshot(opts: Record<string, unknown>, cb: (dataUri: string) => void): void;
     observeEvent(name: string, cb: () => void): void;
+    observe(property: string, cb: () => void): void;
+    unobserve(property: string): void;
     unobserveEvent(name: string): void;
     resize(): void;
     destroy(): void;

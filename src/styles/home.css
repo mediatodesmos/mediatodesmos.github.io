@@ -153,7 +153,7 @@
   height: 44px;
   padding: 0 16px;
   border-bottom: 1px solid var(--line-soft);
-  background: rgb(33 33 33 / 0.4);
+  background: var(--head-bg);
 }
 
 .scard-diamond {
@@ -410,7 +410,7 @@
   margin-top: 12px;
   overflow: hidden;
   border-radius: var(--r-card);
-  background-color: #fff;
+  background-color: var(--paper);
   background-image:
     linear-gradient(to right, rgb(0 0 0 / 0.085) 1px, transparent 1px),
     linear-gradient(to bottom, rgb(0 0 0 / 0.085) 1px, transparent 1px),
@@ -511,7 +511,7 @@
 }
 
 .gp-diagram .d-ink {
-  stroke: #111;
+  stroke: var(--ink);
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -522,23 +522,23 @@
 }
 
 .gp-diagram .d-ctrl {
-  fill: #fff;
+  fill: var(--paper);
   stroke: var(--blue);
   stroke-width: 1.5;
 }
 
 .gp-diagram .d-anchor,
 .gp-diagram .d-pivot {
-  fill: #111;
+  fill: var(--ink);
 }
 
 .gp-diagram .d-solid {
-  fill: #111;
+  fill: var(--ink);
 }
 
 .gp-diagram .d-vertex {
-  fill: #fff;
-  stroke: #111;
+  fill: var(--paper);
+  stroke: var(--ink);
   stroke-width: 1.25;
 }
 
@@ -548,19 +548,19 @@
 }
 
 .gp-diagram .d-arm {
-  stroke: #111;
+  stroke: var(--ink);
   stroke-width: 1.5;
   stroke-linecap: round;
 }
 
 .gp-diagram .d-pen {
   fill: var(--blue);
-  stroke: #fff;
+  stroke: var(--paper);
   stroke-width: 1.5;
 }
 
 .gp-diagram .d-frame {
-  fill: #fff;
+  fill: var(--paper);
   stroke: rgb(0 0 0 / 0.18);
   stroke-width: 1;
 }
@@ -586,12 +586,12 @@
 }
 
 .gp-diagram .d-track-on {
-  stroke: #111;
+  stroke: var(--ink);
 }
 
 .gp-diagram .d-thumb {
-  fill: #fff;
-  stroke: #111;
+  fill: var(--paper);
+  stroke: var(--ink);
   stroke-width: 1.75;
 }
 
@@ -810,11 +810,11 @@
 }
 
 .a-bar {
-  fill: #3a3a3a;
+  fill: var(--art-dim);
 }
 
 .a-bar.is-ink {
-  fill: #d4d4d4;
+  fill: var(--art-ink);
 }
 
 .a-thresh {
@@ -840,11 +840,11 @@
 }
 
 .t-in {
-  fill: #d4d4d4;
+  fill: var(--art-ink);
 }
 
 .t-out {
-  fill: #333;
+  fill: var(--art-dim-2);
 }
 
 .t-line {
@@ -894,7 +894,7 @@
   height: 28px;
   padding: 0 8px;
   border-bottom: 1px solid var(--line-soft);
-  background: rgb(33 33 33 / 0.4);
+  background: var(--head-bg);
 }
 
 .pa-chip {
@@ -1052,7 +1052,7 @@
   position: relative;
   overflow: hidden;
   border-radius: var(--r-base);
-  background-color: #fff;
+  background-color: var(--paper);
   background-image:
     linear-gradient(to right, rgb(0 0 0 / 0.06) 1px, transparent 1px),
     linear-gradient(to bottom, rgb(0 0 0 / 0.06) 1px, transparent 1px);
@@ -1081,7 +1081,7 @@
 }
 
 .ins-stroke {
-  stroke: #111;
+  stroke: var(--ink);
   stroke-width: 2.25;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -1150,7 +1150,7 @@
   }
   36%,
   100% {
-    stroke: #111;
+    stroke: var(--ink);
     stroke-width: 2.25;
   }
 }
@@ -1294,7 +1294,9 @@
   display: block;
   aspect-ratio: 60 / 44;
   border-radius: var(--r-xs);
-  background: #fff;
+  background: var(--paper);
+  outline: 1px solid var(--paper-edge);
+  outline-offset: -1px;
   animation: vid-frame 4s steps(1, end) infinite;
 }
 
@@ -1326,7 +1328,7 @@
 }
 
 .vid-ink {
-  stroke: #111;
+  stroke: var(--ink);
   stroke-width: 2;
 }
 
@@ -1417,7 +1419,7 @@
 }
 
 .fo-orbit {
-  stroke: rgb(235 235 235 / 0.18);
+  stroke: var(--art-orbit);
   stroke-width: 1;
 }
 
@@ -1467,7 +1469,7 @@
   max-width: 260px;
   padding: 10px;
   border-radius: var(--r-card);
-  background: #0b0b0b;
+  background: var(--cam-bg);
   box-shadow: 0 0 0 1px var(--line-soft), var(--shadow-sm);
 }
 
@@ -1482,7 +1484,7 @@
   height: 20px;
   padding: 0 7px;
   border-radius: var(--r-full);
-  background: rgb(0 0 0 / 0.6);
+  background: var(--cam-pill);
   box-shadow: 0 0 0 1px var(--line-soft);
   color: var(--fg);
   font-size: 10px;
@@ -1511,17 +1513,17 @@
 }
 
 .cam-corner {
-  stroke: rgb(235 235 235 / 0.45);
+  stroke: var(--cam-corner);
   stroke-width: 1.25;
   stroke-linecap: round;
 }
 
 .cam-paper {
-  fill: #f4f4f2;
+  fill: var(--cam-paper);
 }
 
 .cam-ink {
-  stroke: #1a1a1a;
+  stroke: var(--cam-ink);
   stroke-width: 1.5;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -1785,7 +1787,7 @@
   margin: calc(var(--size) / -2) 0 0 calc(var(--size) / -2);
   border: 1px solid var(--border);
   border-radius: 50%;
-  background: rgb(235 235 235 / 0.012);
+  background: var(--art-ring-fill);
   animation: orbit var(--dur) linear infinite;
 }
 

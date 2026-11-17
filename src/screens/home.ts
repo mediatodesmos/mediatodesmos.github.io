@@ -24,11 +24,16 @@ import {
   type FaqCategory,
 } from '../ui/components';
 
+import { compareSlider } from '../ui/compare';
+import type { CompareExample } from './samples-preview';
+
 export interface HomeContext {
   go(href: string): void;
   openFile(file: File): void;
   trySample(kind: 'image' | 'video'): void;
   samplePreview(mode: 'outline' | 'fill' | 'fourier' | 'video'): Promise<SVGSVGElement | null>;
+  /** Before/after pairs for the "See the difference" section. */
+  compareExamples?(): Promise<CompareExample[]>;
 }
 
 type Mode = 'outline' | 'fill' | 'fourier' | 'video';
@@ -476,7 +481,50 @@ function heroStage(ctx: HomeContext, alive: () => boolean): HTMLElement {
     }
   })();
 
-  return el('div', { class: 'hero-stage' }, el('div', { class: 'stack' }, ...parts.map((p) => p.card)), el('div', { class: 'stack-tray' }, tray.el));
+  return el(
+    'div',
+    { class: 'hero-stage' },
+    el('div', { class: 'stack' }, ...parts.map((p) => p.card)),
+    el('div', { class: 'stack-tray' }, tray.el),
+    el(
+      'p',
+      { class: 'showcase-credit' },
+      'Showcase traced with Media to Desmos from Waguri in The Fragrant Flower Blooms with Dignity (Saka Mikami / Kodansha). Only the traced equations are shown here.',
+    ),
+  );
+}
+
+/* ================================================================ before / after */
+
+function compareSection(ctx: HomeContext, alive: () => boolean): HTMLElement | null {
+  if (!ctx.compareExamples) return null;
+  const titleId = uid('cmp-title');
+  const grid = el('div', { class: 'compare-grid', dataset: { reveal: '' } });
+  const section = el(
+    'section',
+    { class: 'home-section compare-section', id: 'compare', attrs: { 'aria-labelledby': titleId } },
+    el(
+      'div',
+      { class: 'home-inner', dataset: { reveal: '' } },
+      sectionHead({
+        title: 'See the difference.',
+        lead: 'Drag the handle to compare an original with its Desmos drawing. These examples are drawn and traced by the site itself.',
+        id: titleId,
+      }),
+    ),
+    grid,
+  );
+  void ctx.compareExamples().then(
+    (examples) => {
+      if (!alive()) return;
+      for (const ex of examples) {
+        const cmp = compareSlider({ before: ex.before, after: ex.after, label: ex.title, aspect: ex.aspect, start: 52 });
+        grid.appendChild(el('div', { class: 'compare-card' }, cmp.el, el('h3', null, ex.title), el('p', null, ex.body)));
+      }
+    },
+    () => section.remove(),
+  );
+  return section;
 }
 
 function heroSection(ctx: HomeContext, alive: () => boolean): HTMLElement {
@@ -1100,6 +1148,8 @@ export function renderHome(main: HTMLElement, ctx: HomeContext): () => void {
     hatch(),
     howSection(),
     rule(),
+    compareSection(ctx, isAlive),
+    ctx.compareExamples ? rule() : null,
     featuresSection(),
     hatch(),
     statsSection(),

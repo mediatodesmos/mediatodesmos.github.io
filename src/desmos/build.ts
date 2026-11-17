@@ -6,6 +6,7 @@
 import type { BBox, FourierShape, RegionShape, Shape, StrokeShape, TraceResult } from '../pipeline/types';
 import { bezierLatex, flipY, fourierLatex, list, num, polygonLatex } from './latex';
 import { emptyState, imageViewport, stateWeight, type DesmosExpression, type DesmosItem, type DesmosState } from './state';
+import { BEZIER_FN, BEZIER_FN_ID, FOURIER_FN, FOURIER_FN_ID, LIST_CAP, packedList, pName, pointFn, rangeLatex, strokePoints, xName, yName } from './packed';
 
 export const INK = '#000000';
 export const HIGHLIGHT = '#2f6fed';
@@ -28,6 +29,8 @@ export interface InspectorEntry {
   shapeId?: number;
   /** Extra ids that belong to this entry (e.g. data lists of a chunk). */
   related?: string[];
+  /** A self-contained version of the equation (works without the graph's data lists). */
+  standalone?: string;
 }
 
 export interface BuildOptions {
@@ -38,6 +41,12 @@ export interface BuildOptions {
   name?: string;
   /** Fourier mode: add a rotating-circle animation for the largest shape. */
   epicycles?: boolean;
+  /** Decimal places for coordinates (default: 0 for images 500 px or larger, else 1). */
+  decimals?: number;
+  /** Outline: fold strokes shorter than this (px) into one "small details" expression. 0 = off. */
+  mergeBelow?: number;
+  /** Outline: compact shared-function encoding (default true). */
+  packed?: boolean;
 }
 
 export interface BuiltGraph {
@@ -69,12 +78,36 @@ export function buildImageGraph(res: TraceResult, opts: BuildOptions): BuiltGrap
       `Style: ${MODE_LABEL[res.mode]}. ${res.shapes.length} shapes traced from a ${W}x${H} px image.`,
   });
 
-  for (const sh of res.shapes) {
-    const expr = shapeExpression(sh, H, opts.strokeWidth);
-    const entry = describeShape(sh, expr.latex, W, H);
-    if (opts.notes) items.push({ type: 'text', id: `n${sh.id}`, text: `${entry.title}: ${entry.summary}` });
-    items.push(expr);
-    entries.push(entry);
+  const decimals = opts.decimals ?? (Math.max(W, H) >= 500 ? 0 : 1);
+
+  if (res.mode === 'outline' && opts.packed !== false) {
+    addPackedStrokes(res, opts, decimals, items, entries);
+  } else {
+    const fourier = res.mode === 'fourier' && opts.packed !== false;
+    if (fourier) {
+      items.push({ type: 'folder', id: 'm2d-fn', title: 'The Fourier series function', collapsed: true });
+      items.push({ type: 'expression', id: FOURIER_FN_ID, folderId: 'm2d-fn', latex: FOURIER_FN });
+    }
+    for (const sh of res.shapes) {
+      const expr = shapeExpression(sh, H, opts.strokeWidth, decimals);
+      if (fourier && sh.kind === 'fourier') {
+        const c = fourierColumns(sh, H);
+        const standalone = expr.latex;
+        expr.latex = `Z\\left(t,${list(c.k, 0)},${list(c.re, decimals + 1)},${list(c.im, decimals + 1)}\\right)`;
+        const entry = describeShape(sh, expr.latex, W, H);
+        entry.standalone = standalone;
+        entry.explain +=
+          ' Z(t,k,a,b) is defined once for the whole graph: its x is total(a cos(2 pi k t) - b sin(2 pi k t)) and its y is total(a sin(2 pi k t) + b cos(2 pi k t)).';
+        if (opts.notes) items.push({ type: 'text', id: `n${sh.id}`, text: `${entry.title}: ${entry.summary}` });
+        items.push(expr);
+        entries.push(entry);
+        continue;
+      }
+      const entry = describeShape(sh, expr.latex, W, H);
+      if (opts.notes) items.push({ type: 'text', id: `n${sh.id}`, text: `${entry.title}: ${entry.summary}` });
+      items.push(expr);
+      entries.push(entry);
+    }
   }
 
   if (opts.epicycles && res.mode === 'fourier') {
@@ -87,6 +120,83 @@ export function buildImageGraph(res: TraceResult, opts: BuildOptions): BuiltGrap
   state.expressions.list = items;
   const w = stateWeight(state);
   return { state, entries, width: W, height: H, bytes: w.bytes, expressions: w.expressions };
+}
+
+/** Outline shapes in the compact encoding (see packed.ts). */
+function addPackedStrokes(res: TraceResult, opts: BuildOptions, decimals: number, items: DesmosItem[], entries: InspectorEntry[]): void {
+  const { width: W, height: H } = res;
+  const strokes = res.shapes.filter((s): s is StrokeShape => s.kind === 'stroke' && s.segs.length >= 8);
+  interface Chunk {
+    xs: number[];
+    ys: number[];
+  }
+  const chunks: Chunk[] = [];
+  const placed: { sh: StrokeShape; c: number; a: number; b: number }[] = [];
+  let cur: Chunk | null = null;
+  for (const sh of strokes) {
+    const { xs, ys } = strokePoints(sh.segs, H);
+    if (!cur || cur.xs.length + xs.length > LIST_CAP) {
+      cur = { xs: [], ys: [] };
+      chunks.push(cur);
+    }
+    const a = cur.xs.length + 1;
+    cur.xs.push(...xs);
+    cur.ys.push(...ys);
+    placed.push({ sh, c: chunks.length, a, b: a + 3 * (sh.segs.length / 8 - 1) });
+  }
+
+  items.push({ type: 'folder', id: 'm2d-curves', title: 'Curve data: control points and the Bezier function', collapsed: true });
+  items.push({ type: 'expression', id: BEZIER_FN_ID, folderId: 'm2d-curves', latex: BEZIER_FN });
+  chunks.forEach((ch, i) => {
+    const c = i + 1;
+    items.push({ type: 'expression', id: `cx${c}`, folderId: 'm2d-curves', latex: `${xName(c)}=${packedList(ch.xs, decimals)}` });
+    items.push({ type: 'expression', id: `cy${c}`, folderId: 'm2d-curves', latex: `${yName(c)}=${packedList(ch.ys, decimals)}` });
+    items.push({ type: 'expression', id: `cp${c}`, folderId: 'm2d-curves', latex: pointFn(c) });
+  });
+
+  const mergeBelow = opts.mergeBelow ?? 0;
+  // Small strokes are merged per chunk and per colour (In Color keeps each colour separate).
+  const small = new Map<string, { c: number; color: string; starts: number[] }>();
+  let smallCount = 0;
+  let smallSegs = 0;
+  const style = { color: INK, lineWidth: String(opts.strokeWidth), lineOpacity: '1' };
+  for (const p of placed) {
+    if (mergeBelow > 0 && p.sh.length < mergeBelow) {
+      const color = p.sh.color ?? INK;
+      const key = `${p.c}|${color}`;
+      const group = small.get(key) ?? { c: p.c, color, starts: [] };
+      for (let k = p.a; k <= p.b; k += 3) group.starts.push(k);
+      small.set(key, group);
+      smallCount++;
+      smallSegs += p.sh.segs.length / 8;
+      continue;
+    }
+    const latex = `${pName(p.c)}\\left(t,${rangeLatex(p.a, p.b)}\\right)`;
+    const entry = describeShape(p.sh, latex, W, H, { chunk: p.c, a: p.a, b: p.b });
+    entry.standalone = strokeLatex(p.sh, H);
+    if (opts.notes) items.push({ type: 'text', id: `n${p.sh.id}`, text: `${entry.title}: ${entry.summary}` });
+    items.push({ type: 'expression', id: `s${p.sh.id}`, latex, ...style, color: p.sh.color ?? INK });
+    entries.push(entry);
+  }
+  let g = 0;
+  for (const { c, color, starts } of small.values()) {
+    g++;
+    const listId = `sm${g}`;
+    const mName = small.size > 1 ? `M_{${g}}` : `M_{${c}}`;
+    items.push({ type: 'expression', id: `smk${g}`, folderId: 'm2d-curves', latex: `${mName}=${packedList(starts, 0)}` });
+    const latex = `${pName(c)}\\left(t,${mName}\\right)`;
+    items.push({ type: 'expression', id: listId, latex, ...style, color });
+    entries.push({
+      id: listId,
+      kind: 'stroke',
+      title: small.size > 1 ? `Small details (group ${g})` : 'Small details',
+      summary: `${smallCount.toLocaleString('en-US')} short strokes merged into one equation (${smallSegs.toLocaleString('en-US')} Bezier segments)`,
+      explain:
+        `Short strokes (under ${mergeBelow} px) share a single equation so Desmos has fewer expressions to manage. ` +
+        `M_${c} lists where each of their segments starts in the X_${c} and Y_${c} point lists, and P_${c} draws a Bezier segment from each start.`,
+      latex,
+    });
+  }
 }
 
 /**
@@ -149,15 +259,15 @@ function addEpicycles(sh: FourierShape, H: number, items: DesmosItem[], entries:
   });
 }
 
-export function shapeExpression(sh: Shape, H: number, strokeWidth: number): DesmosExpression {
+export function shapeExpression(sh: Shape, H: number, strokeWidth: number, decimals = 1): DesmosExpression {
   const id = `s${sh.id}`;
   switch (sh.kind) {
     case 'stroke':
       return {
         type: 'expression',
         id,
-        color: INK,
-        latex: strokeLatex(sh, H),
+        color: sh.color ?? INK,
+        latex: strokeLatex(sh, H, decimals),
         lineWidth: String(strokeWidth),
         lineOpacity: '1',
         parametricDomain: { min: '0', max: '1' },
@@ -166,8 +276,8 @@ export function shapeExpression(sh: Shape, H: number, strokeWidth: number): Desm
       return {
         type: 'expression',
         id,
-        color: INK,
-        latex: regionLatex(sh, H),
+        color: sh.color ?? INK,
+        latex: regionLatex(sh, H, decimals),
         fillOpacity: '1',
         lines: false,
         lineOpacity: '1',
@@ -176,8 +286,8 @@ export function shapeExpression(sh: Shape, H: number, strokeWidth: number): Desm
       return {
         type: 'expression',
         id,
-        color: INK,
-        latex: fourierShapeLatex(sh, H),
+        color: sh.color ?? INK,
+        latex: fourierShapeLatex(sh, H, decimals + 1),
         lineWidth: String(strokeWidth),
         lineOpacity: '1',
         parametricDomain: { min: '0', max: '1' },
@@ -201,8 +311,8 @@ export function strokeColumns(segs: number[], H: number): number[][] {
   return cols;
 }
 
-export function strokeLatex(sh: StrokeShape, H: number): string {
-  const c = strokeColumns(sh.segs, H).map((col) => list(col));
+export function strokeLatex(sh: StrokeShape, H: number, decimals = 1): string {
+  const c = strokeColumns(sh.segs, H).map((col) => list(col, decimals));
   return bezierLatex(c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]);
 }
 
@@ -266,14 +376,14 @@ export function regionRings(sh: RegionShape, H: number): { pts: number[]; hole: 
   });
 }
 
-export function regionLatex(sh: RegionShape, H: number): string {
+export function regionLatex(sh: RegionShape, H: number, decimals = 1): string {
   const path = bridgedPath(regionRings(sh, H));
   const xs: number[] = [], ys: number[] = [];
   for (let i = 0; i < path.length; i += 2) {
     xs.push(path[i]);
     ys.push(path[i + 1]);
   }
-  return polygonLatex(list(xs), list(ys));
+  return polygonLatex(list(xs, decimals), list(ys, decimals));
 }
 
 /** Fourier coefficients in Desmos coordinates (y flipped: z' = conj(z) + iH). */
@@ -291,9 +401,9 @@ export function fourierColumns(sh: FourierShape, H: number): { k: number[]; re: 
   return { k, re, im };
 }
 
-export function fourierShapeLatex(sh: FourierShape, H: number): string {
+export function fourierShapeLatex(sh: FourierShape, H: number, decimals = 2): string {
   const c = fourierColumns(sh, H);
-  return fourierLatex(list(c.k, 0), list(c.re, 3), list(c.im, 3));
+  return fourierLatex(list(c.k, 0), list(c.re, decimals), list(c.im, decimals));
 }
 
 // ---------------------------------------------------------------- descriptions
@@ -320,7 +430,13 @@ function sizeWords(b: BBox, W: number, H: number): string {
 const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 const px = (v: number) => `(${num(v)}, `;
 
-export function describeShape(sh: Shape, latex: string, W: number, H: number): InspectorEntry {
+export function describeShape(
+  sh: Shape,
+  latex: string,
+  W: number,
+  H: number,
+  packed?: { chunk: number; a: number; b: number },
+): InspectorEntry {
   const where = positionWords(sh.bbox, W, H);
   const size = sizeWords(sh.bbox, W, H);
   const id = `s${sh.id}`;
@@ -330,17 +446,24 @@ export function describeShape(sh: Shape, latex: string, W: number, H: number): I
     const ex =
       `Segment 1 starts at ${px(s[0])}${num(flipY(s[1], H))}) and ends at ${px(s[6])}${num(flipY(s[7], H))}). ` +
       `It is pulled toward the control points ${px(s[2])}${num(flipY(s[3], H))}) and ${px(s[4])}${num(flipY(s[5], H))}).`;
+    const c = packed?.chunk;
+    const explain = packed
+      ? `A parametric curve made of ${plural(n, 'cubic Bezier segment')}. The list ${n > 1 ? `[${packed.a}, ${packed.a + 3}, ..., ${packed.b}]` : `[${packed.a}]`} ` +
+        `gives where each segment starts in the point lists X_${c} and Y_${c} (neighbouring segments share their end points, so starts are 3 apart). ` +
+        `P_${c}(t,k) takes the 4 points from position k onward and blends them with B(t,a,b,c,d) = (1-t)^3 a + 3t(1-t)^2 b + 3t^2(1-t) c + t^3 d. ` +
+        `As t runs from 0 to 1 each segment travels from its start point to its end point, pulled toward its two middle control points. ` +
+        `Desmos applies P_${c} to every start at once, so this one short equation draws the whole ${sh.closed ? 'loop' : 'line'}.`
+      : `A parametric curve. As t runs from 0 to 1, each segment travels from its start point (the first list) to its end point ` +
+        `(the fourth list) while being pulled toward two control points (the middle lists). The four weights ` +
+        `(1-t)^3, 3t(1-t)^2, 3t^2(1-t) and t^3 always add up to 1. Desmos applies the formula to every position in the lists ` +
+        `at once, so this single equation draws all ${plural(n, 'segment')} of the ${sh.closed ? 'loop' : 'line'}.`;
     return {
       id,
       kind: 'stroke',
       shapeId: sh.id,
       title: `Curve ${sh.id}`,
       summary: `${plural(n, 'Bezier segment')}, ${sh.closed ? 'closed loop' : 'open line'}, ${Math.round(sh.length)} px long, ${size}, ${where}`,
-      explain:
-        `A parametric curve. As t runs from 0 to 1, each segment travels from its start point (the first list) to its end point ` +
-        `(the fourth list) while being pulled toward two control points (the middle lists). The four weights ` +
-        `(1-t)^3, 3t(1-t)^2, 3t^2(1-t) and t^3 always add up to 1. Desmos applies the formula to every position in the lists ` +
-        `at once, so this single equation draws all ${plural(n, 'segment')} of the ${sh.closed ? 'loop' : 'line'}.`,
+      explain,
       example: ex,
       latex,
       bbox: sh.bbox,

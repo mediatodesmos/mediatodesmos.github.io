@@ -13,7 +13,18 @@ export type AnalysisView = 'source' | 'bitmap' | 'overlay';
 
 export interface AnalysisOptions {
   onThreshold: (t: number) => void;
+  /** BETA crop: a new crop rectangle was drawn (fractions of the full source). */
+  onCrop?: (crop: CropRect | null) => void;
 }
+
+export interface CropRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+const ASPECTS: Record<string, number | null> = { free: null, '1:1': 1, '4:3': 4 / 3, '16:9': 16 / 9, '9:16': 9 / 16 };
 
 export class Analysis {
   readonly el: HTMLElement;
@@ -29,6 +40,12 @@ export class Analysis {
   private histData: number[] | null = null;
   private threshold = -1;
   private showHist = true;
+  // BETA crop editing
+  private cropMode = false;
+  private cropFull: HTMLCanvasElement | null = null;
+  private crop: CropRect | null = null;
+  private aspect: number | null = null;
+  private drag: { kind: 'move' | 'new' | 'corner'; ax: number; ay: number; start: CropRect | null } | null = null;
 
   constructor(private opts: AnalysisOptions) {
     this.canvas = el('canvas', { class: 'an-canvas', attrs: { 'aria-label': 'Source analysis preview' } });
@@ -59,6 +76,9 @@ export class Analysis {
       },
       { size: 'sm', full: true },
     );
+    this.canvas.addEventListener('pointerdown', (e) => this.cropDown(e));
+    this.canvas.addEventListener('pointermove', (e) => this.cropMove(e));
+    this.canvas.addEventListener('pointerup', () => this.cropUp());
     this.el = el(
       'div',
       { class: 'an' },
@@ -67,6 +87,11 @@ export class Analysis {
       this.hist,
       this.info,
     );
+  }
+
+  /** The traced input at working resolution (for the before/after overlay). */
+  sourceCanvas(): HTMLCanvasElement | null {
+    return this.srcCanvas;
   }
 
   setSource(img: RgbaImage): void {
@@ -94,12 +119,104 @@ export class Analysis {
     this.draw();
   }
 
+  /**
+   * BETA crop editing: show the whole, uncropped source with the crop rectangle.
+   * Drag inside to move it, from a corner to resize, anywhere else to draw a new one.
+   */
+  setCropMode(on: boolean, full: HTMLCanvasElement | null, crop: CropRect | null, aspect: string): void {
+    this.cropMode = on && !!full;
+    this.cropFull = full;
+    this.crop = crop;
+    this.aspect = ASPECTS[aspect] ?? null;
+    this.canvas.classList.toggle('is-cropping', this.cropMode);
+    this.draw();
+  }
+
+  private point(e: PointerEvent): [number, number] {
+    const r = this.canvas.getBoundingClientRect();
+    return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))];
+  }
+
+  /** Height (as a fraction) that keeps the locked aspect ratio for a given width fraction. */
+  private lockedH(wFrac: number): number {
+    const f = this.cropFull!;
+    return this.aspect ? (wFrac * f.width) / (this.aspect * f.height) : wFrac;
+  }
+
+  private cropDown(e: PointerEvent): void {
+    if (!this.cropMode || !this.cropFull) return;
+    this.canvas.setPointerCapture(e.pointerId);
+    const [x, y] = this.point(e);
+    const c = this.crop;
+    const r = this.canvas.getBoundingClientRect();
+    const tol = 12 / Math.max(1, r.width);
+    if (c) {
+      const corners: [number, number, number, number][] = [
+        [c.x, c.y, c.x + c.w, c.y + c.h],
+        [c.x + c.w, c.y, c.x, c.y + c.h],
+        [c.x, c.y + c.h, c.x + c.w, c.y],
+        [c.x + c.w, c.y + c.h, c.x, c.y],
+      ];
+      for (const [cx, cy, ox, oy] of corners) {
+        if (Math.abs(x - cx) < tol && Math.abs(y - cy) < tol * (r.width / r.height)) {
+          this.drag = { kind: 'corner', ax: ox, ay: oy, start: c };
+          return;
+        }
+      }
+      if (x > c.x && x < c.x + c.w && y > c.y && y < c.y + c.h) {
+        this.drag = { kind: 'move', ax: x, ay: y, start: { ...c } };
+        return;
+      }
+    }
+    this.drag = { kind: 'new', ax: x, ay: y, start: null };
+  }
+
+  private cropMove(e: PointerEvent): void {
+    const d = this.drag;
+    if (!d) return;
+    const [x, y] = this.point(e);
+    if (d.kind === 'move' && d.start) {
+      const s = d.start;
+      this.crop = {
+        x: Math.min(1 - s.w, Math.max(0, s.x + x - d.ax)),
+        y: Math.min(1 - s.h, Math.max(0, s.y + y - d.ay)),
+        w: s.w,
+        h: s.h,
+      };
+    } else {
+      // New rectangle or corner resize: anchored at (ax, ay).
+      let w = Math.abs(x - d.ax);
+      let h = Math.abs(y - d.ay);
+      if (this.aspect) h = this.lockedH(w);
+      const nx = x < d.ax ? d.ax - w : d.ax;
+      const ny = y < d.ay ? d.ay - h : d.ay;
+      const cx = Math.max(0, nx), cy = Math.max(0, ny);
+      w = Math.min(w, 1 - cx);
+      h = this.aspect ? Math.min(this.lockedH(w), 1 - cy) : Math.min(h, 1 - cy);
+      if (this.aspect) w = (h * this.aspect * this.cropFull!.height) / this.cropFull!.width;
+      this.crop = { x: cx, y: cy, w, h };
+    }
+    this.draw();
+  }
+
+  private cropUp(): void {
+    if (!this.drag) return;
+    this.drag = null;
+    const c = this.crop;
+    // Tiny rectangles (a click) clear the crop.
+    const keep = c && c.w > 0.04 && c.h > 0.04 ? c : null;
+    this.crop = keep;
+    this.draw();
+    this.opts.onCrop?.(keep);
+  }
+
   setHighlight(ids: number[]): void {
     this.highlight = new Set(ids);
     if (this.view !== 'bitmap') this.draw();
   }
 
   private draw(): void {
+    if (this.cropMode && this.cropFull) return this.drawCrop();
     const img = this.img;
     const res = this.res;
     const W = res?.width ?? img?.width ?? 1;
@@ -144,6 +261,29 @@ export class Analysis {
     }
     g.restore();
     this.drawHist();
+  }
+
+  private drawCrop(): void {
+    const f = this.cropFull!;
+    const scale = Math.min(2, 640 / Math.max(f.width, f.height));
+    const W = (this.canvas.width = Math.round(f.width * scale));
+    const H = (this.canvas.height = Math.round(f.height * scale));
+    const g = this.canvas.getContext('2d')!;
+    g.drawImage(f, 0, 0, W, H);
+    const c = this.crop;
+    if (!c) return;
+    const x = c.x * W, y = c.y * H, w = c.w * W, h = c.h * H;
+    g.fillStyle = 'rgba(0,0,0,0.55)';
+    g.fillRect(0, 0, W, y);
+    g.fillRect(0, y + h, W, H - y - h);
+    g.fillRect(0, y, x, h);
+    g.fillRect(x + w, y, W - x - w, h);
+    g.strokeStyle = '#3b82f6';
+    g.lineWidth = 2;
+    g.strokeRect(x + 1, y + 1, w - 2, h - 2);
+    g.fillStyle = '#3b82f6';
+    const k = Math.max(8, W / 60);
+    for (const [cx, cy] of [[x, y], [x + w, y], [x, y + h], [x + w, y + h]]) g.fillRect(cx - k / 2, cy - k / 2, k, k);
   }
 
   private drawHist(): void {

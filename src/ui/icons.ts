@@ -21,7 +21,10 @@ export type IconName =
   | 'refresh' | 'crosshair' | 'maximize' | 'zoom-fit' | 'github' | 'clock' | 'film' | 'frame' | 'save'
   | 'gallery' | 'contrast' | 'target' | 'search' | 'lock' | 'wand' | 'scan' | 'spinner'
   // extras
-  | 'arrow-left' | 'braces' | 'histogram' | 'webcam';
+  | 'arrow-left' | 'braces' | 'histogram' | 'webcam'
+  // round 2: accounts, theme, tour, BETA tools
+  | 'user' | 'log-in' | 'log-out' | 'cloud' | 'sun' | 'moon' | 'compass' | 'crop' | 'palette' | 'axes'
+  | 'compare' | 'flask' | 'mail' | 'key';
 
 export interface IconOptions {
   size?: number;
@@ -126,6 +129,22 @@ const ICONS: Record<IconName, string> = {
   histogram: 'M3.5 19.5h17|R 5.5 12 3 5 .75|R 10.5 6 3 11 .75|R 15.5 9.5 3 7.5 .75',
   webcam: 'C 12 10 6.5|C 12 10 2.5|M8.5 21h7|M12 16.5V21',
   spinner: 'O:C 12 12 9|M12 3a9 9 0 0 1 9 9',
+  // round 2
+  user: 'C 12 8.5 4|M4.5 20.5a7.5 7.5 0 0 1 15 0',
+  'log-in': 'M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4|M3.5 12h11|M10.5 7.5L15 12l-4.5 4.5',
+  'log-out': 'M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4|M9.5 12h11|M16.5 7.5L21 12l-4.5 4.5',
+  cloud: 'M7 18.5a4.5 4.5 0 0 1-.6-8.96 6 6 0 0 1 11.5 1.46A3.75 3.75 0 0 1 17.5 18.5z',
+  sun: 'C 12 12 4|M12 2.5v2|M12 19.5v2|M2.5 12h2|M19.5 12h2|M5.3 5.3l1.4 1.4|M17.3 17.3l1.4 1.4|M5.3 18.7l1.4-1.4|M17.3 6.7l1.4-1.4',
+  moon: 'M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z',
+  compass: 'C 12 12 9|M15.5 8.5l-2 5-5 2 2-5z',
+  crop: 'M6.5 2.5v13a2 2 0 0 0 2 2h13|M2.5 6.5h13a2 2 0 0 1 2 2v13',
+  palette:
+    'M12 3a9 9 0 0 0 0 18c1.1 0 1.75-.75 1.75-1.6 0-.45-.2-.85-.45-1.15-.25-.3-.45-.7-.45-1.15 0-.9.75-1.6 1.65-1.6H16.5A4.5 4.5 0 0 0 21 11c0-4.4-4-8-9-8z|C 7.5 11.5 1|C 10 7.25 1|C 14.5 7.25 1',
+  axes: 'M5 3.5v15.5h15.5|M5 3.5L3 5.5|M5 3.5l2 2|M20.5 19l-2-2|M20.5 19l-2 2|M9 15h.01|M9 19v-1.5|M13 19v-1.5|M17 19v-1.5|M5 15h1.5|M5 11h1.5|M5 7h1.5',
+  compare: 'M12 3v18|R 3.5 5 17 14 2|O:F:M12 5h6.5a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H12z|M8.5 10l-2 2 2 2|M15.5 10l2 2-2 2',
+  flask: 'M9.5 3.5h5|M10.5 3.5v5.25L5.2 18.1A1.6 1.6 0 0 0 6.6 20.5h10.8a1.6 1.6 0 0 0 1.4-2.4L13.5 8.75V3.5|M7.75 14h8.5',
+  mail: 'R 3 5.5 18 13 2|M3.5 7l8.5 6 8.5-6',
+  key: 'C 8 15.5 3.5|M10.6 12.9L20 3.5|M16.5 7l2.5 2.5|M14 9.5l2 2',
 };
 
 export const ICON_NAMES = Object.keys(ICONS) as IconName[];

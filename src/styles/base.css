@@ -13,7 +13,6 @@ html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
   background: var(--bg);
-  color-scheme: dark;
   scroll-padding-top: calc(var(--header-h) + 16px);
 }
 
@@ -87,7 +86,22 @@ body {
 }
 
 ::selection {
-  background: rgb(59 130 246 / 0.35);
+  background: var(--selection);
+}
+
+/* Theme switch (src/ui/theme.ts): a short crossfade where View Transitions exist; otherwise the swap
+   happens with transitions paused for a frame, so elements don't fade between palettes at different speeds. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 220ms;
+  animation-timing-function: var(--ease);
+}
+
+html.is-theme-switching,
+html.is-theme-switching *,
+html.is-theme-switching *::before,
+html.is-theme-switching *::after {
+  transition: none !important;
 }
 
 /* ---------------------------------------------------------------- typography */
