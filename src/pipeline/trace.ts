@@ -20,6 +20,7 @@ import { fourierFit } from './fourier';
 import { inkMap, removeSmallComponents } from './ink';
 import { joinChains, pruneSpurs } from './chainops';
 import { autoColors, colorIndexAt, hex, quantize, stackedLayerField, type Palette } from './color';
+import { matchPalette } from './colormatch';
 import { closeGaps, enhanceGray, median3 } from './enhance';
 import { sampleSegs } from './bezier';
 import { sampleFourier } from './fourier';
@@ -169,6 +170,12 @@ export function trace(img: RgbaImage, s: TraceSettings, opts: TraceOptions = {})
     kept.sort((a, b) => ((a.kind === 'region' ? a.layer ?? 0 : 0) - (b.kind === 'region' ? b.layer ?? 0 : 0)) || importance(b) - importance(a));
   }
   kept.forEach((sh, i) => (sh.id = i + 1));
+
+  // Match the colours to the picture, using what is actually visible once drawn.
+  if (palette) {
+    palette.colors = matchPalette(kept, palette.colors, img);
+    for (const sh of kept) if (sh.paletteIndex !== undefined) sh.color = hex(palette.colors[sh.paletteIndex]);
+  }
 
   let segments = 0, points = 0, terms = 0;
   for (const sh of kept) {

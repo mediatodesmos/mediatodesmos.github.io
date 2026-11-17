@@ -773,12 +773,17 @@ class ConvertScreen {
     const crop = cropOf(s);
     const bg = this.bgOptions();
     const layers = this.layers;
-    const imageAt = async (r: number): Promise<RgbaImage> => {
+    // Videos are tuned on five frames spread over the chosen range.
+    const frames = video ? 5 : 1;
+    const range = this.video;
+    const frameTime = (f: number) =>
+      range && range.end > range.start ? range.start + ((f + 0.5) / frames) * (range.end - range.start) : this.probeTime();
+    const imageAt = async (r: number, f: number): Promise<RgbaImage> => {
       if (src.kind === 'image') return rasterize(layers && layers.active(bg) ? layers.compose(bg) : src.drawable, r, crop);
-      const f = await src.video.frameAt(this.probeTime(), r, crop);
-      return layers ? layers.processFrame(f, bg) : f;
+      const img = await src.video.frameAt(frameTime(f), r, crop);
+      return layers ? layers.processFrame(img, bg) : img;
     };
-    this.panel.setEnhanceStatus(true, 'Measuring your picture...');
+    this.panel.setEnhanceStatus(true, video ? 'Measuring five frames of your video...' : 'Measuring your picture...');
     try {
       const base = traceSettingsOf(s);
       const { autoEnhance } = await import('../../pipeline/autoenhance');
@@ -786,11 +791,13 @@ class ConvertScreen {
         mode,
         run: (img, ts) => getPool().run(img, ts, {}),
         imageAt,
+        frames,
         maxResolution: video ? VIDEO_MAX_RES : ENHANCED_MAX_RES,
         maxBudget: video ? Math.min(4000, BUDGET_RANGE[s.mode].max) : Math.min(HIGH_BUDGET_MAX, s.mode === 'fill' ? HIGH_BUDGET_MAX : 20000),
         targetMs: video ? 135 : 450,
         targetBytes: video ? 6000 : 160_000,
-        onProgress: (done, total) => this.panel.setEnhanceStatus(true, `Trying settings: ${done} of about ${total}...`),
+        onProgress: (p) =>
+          this.panel.setEnhanceStatus(true, `Step ${p.step} of ${p.steps}: ${p.label}. ${p.tried} ${p.tried === 1 ? 'try' : 'tries'} so far${frames > 1 ? `, ${frames} frames each` : ''}...`),
         cancelled: () => this.enhanceCancelled || this.destroyed || this.source !== src,
       });
       if (this.destroyed || this.source !== src) return;
@@ -811,11 +818,22 @@ class ConvertScreen {
       if ('lineSource' in patch) this.lineSourceChosen = true;
       this.panel.set(this.settings);
       const better = out.after > out.before + 0.002;
+      // One entry per setting (a later step, like the resolution re-check, replaces an earlier one).
+      const byName = new Map<string, string>();
+      for (const c of out.steps.flatMap((st) => st.changes)) {
+        const name = c.replace(/ \S+$/, '');
+        byName.delete(name);
+        byName.set(name, c);
+      }
+      const changes = [...byName.values()];
+      if (b.color && b.autoColor && out.result.autoColor) changes.push(`Colours ${out.result.autoColor.k} (Auto Color)`);
       this.panel.setEnhanceStatus(
         false,
         better
-          ? `Done: match ${pct(out.before)} to ${pct(out.after)} after ${out.tried} tries${this.enhanceCancelled ? ' (stopped early)' : ''}.`
-          : `Your settings were already the best match found (${pct(out.after)}, ${out.tried} tries).`,
+          ? `Done: match ${pct(out.before)} to ${pct(out.after)} after ${out.tried} tries${this.enhanceCancelled ? ' (stopped early)' : ''}. ${changes.join(', ')}.`
+          : this.enhanceCancelled
+            ? `Stopped after ${out.tried} ${out.tried === 1 ? 'try' : 'tries'}. Your settings are unchanged.`
+            : `Your settings were already the best match found (${pct(out.after)}, ${out.tried} tries).`,
       );
       this.raster = null;
       if (this.builtVideo) this.panel.setVideoStale(true, 'Rebuild video graph');

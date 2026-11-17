@@ -475,7 +475,7 @@ export class SettingsPanel {
       el(
         'p',
         { class: 'field-hint', attrs: { 'aria-live': 'polite' } },
-        st.text || 'Tries many combinations of these settings and keeps the one that matches your picture best. You can still change anything afterwards.',
+        st.text || 'Tunes one step at a time: resolution first, then smoothing, detail and budget, keeping whatever matches your picture best and looks cleanest. Videos are tuned on five frames. You can still change anything afterwards.',
       ),
     );
   }

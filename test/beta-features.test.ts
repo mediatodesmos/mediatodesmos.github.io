@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { adjustColor, adjustPalette, autoColors, hex, parseHex, quantize } from '../src/pipeline/color';
+import { adjustColor, adjustPalette, autoColors, hex, parseHex, quantize, toOklab } from '../src/pipeline/color';
+import { matchPalette } from '../src/pipeline/colormatch';
 import { closeGaps, median3, stretchContrast } from '../src/pipeline/enhance';
 import { trace } from '../src/pipeline/trace';
 import { buildImageGraph } from '../src/desmos/build';
@@ -54,8 +55,38 @@ describe('In Color (BETA)', () => {
       colorImage(120, 60, (x) => [[230, 30, 30], [30, 160, 40], [30, 60, 220], [240, 220, 40], [250, 250, 250], [20, 20, 20]][Math.floor(x / 20)] as [number, number, number]),
     );
     expect(six.k).toBe(6);
-    expect(three.saturation).toBeGreaterThanOrEqual(1);
-    expect(three.saturation).toBeLessThanOrEqual(1.6);
+    // Colours are matched after tracing, so Auto Color no longer boosts saturation.
+    expect(three.saturation).toBe(1);
+  });
+
+  it('keeps dark navy and dark purple apart', () => {
+    const NAVY: [number, number, number] = [30, 34, 70];
+    const PURPLE: [number, number, number] = [62, 30, 60];
+    const img = colorImage(90, 60, (x) => (x < 30 ? NAVY : x < 60 ? PURPLE : [250, 248, 246]));
+    const p = quantize(img, 3);
+    const de = (a: number[], b: number[]) => {
+      const [l1, a1, b1] = toOklab(a as [number, number, number]), [l2, a2, b2] = toOklab(b as [number, number, number]);
+      return Math.hypot(l1 - l2, a1 - a2, b1 - b2) * 100;
+    };
+    expect(Math.min(...p.colors.map((c) => de(c, NAVY)))).toBeLessThan(3);
+    expect(Math.min(...p.colors.map((c) => de(c, PURPLE)))).toBeLessThan(3);
+  });
+
+  it('matches each colour to the pixels it really covers, taking the dominant hue', () => {
+    // One region over a picture that is 80% navy with 20% pink speckle: the cluster average
+    // is a muddy mauve, the matched colour stays navy.
+    const NAVY: [number, number, number] = [30, 34, 70];
+    const PINK: [number, number, number] = [230, 150, 170];
+    const img = colorImage(50, 50, (x, y) => ((x * 7 + y * 3) % 5 === 0 ? PINK : NAVY));
+    const shapes = [{ kind: 'region' as const, id: 1, rings: [[0, 0, 50, 0, 50, 50, 0, 50]], area: 2500, bbox: [0, 0, 50, 50] as [number, number, number, number], layer: 0, paletteIndex: 0 }];
+    const mean: [number, number, number] = [0.8 * NAVY[0] + 0.2 * PINK[0], 0.8 * NAVY[1] + 0.2 * PINK[1], 0.8 * NAVY[2] + 0.2 * PINK[2]];
+    const [m] = matchPalette(shapes, [mean], img);
+    const de = (a: number[], b: number[]) => {
+      const [l1, a1, b1] = toOklab(a as [number, number, number]), [l2, a2, b2] = toOklab(b as [number, number, number]);
+      return Math.hypot(l1 - l2, a1 - a2, b1 - b2) * 100;
+    };
+    expect(de(m, NAVY)).toBeLessThan(3);
+    expect(de(mean, NAVY)).toBeGreaterThan(10);
   });
 
   it('adjusts saturation and brightness without moving the hue', () => {

@@ -6,7 +6,6 @@
 
 import type { TraceRequest, TraceResponse } from './protocol';
 import type { RgbaImage, TraceResult, TraceSettings } from './types';
-import { trace } from './trace';
 
 interface Job {
   req: TraceRequest;
@@ -85,7 +84,8 @@ export class TracePool {
   /** Trace an image. The pixel buffer is copied, so the caller keeps its ImageData. */
   run(img: RgbaImage, settings: TraceSettings, opts: RunOptions = {}): Promise<TraceResult> {
     if (!this.useWorkers) {
-      return Promise.resolve().then(() => trace(img, settings, opts));
+      // No workers: trace on the main thread (loaded on first use, so it stays out of the main bundle).
+      return import('./trace').then(({ trace }) => trace(img, settings, opts));
     }
     const pixels = img.data.slice().buffer as ArrayBuffer;
     const req: TraceRequest = {

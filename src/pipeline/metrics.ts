@@ -55,18 +55,20 @@ export function distanceTo(mask: Uint8Array, w: number, h: number): Float32Array
   return d;
 }
 
-function plot(mask: Uint8Array, w: number, h: number, x: number, y: number): void {
+type Grid = Uint8Array | Int16Array;
+
+function plot(mask: Grid, w: number, h: number, x: number, y: number, v: number): void {
   const xi = Math.round(x), yi = Math.round(y);
-  if (xi >= 0 && yi >= 0 && xi < w && yi < h) mask[yi * w + xi] = 1;
+  if (xi >= 0 && yi >= 0 && xi < w && yi < h) mask[yi * w + xi] = v;
 }
 
-function line(mask: Uint8Array, w: number, h: number, x0: number, y0: number, x1: number, y1: number): void {
+function line(mask: Grid, w: number, h: number, x0: number, y0: number, x1: number, y1: number, v: number): void {
   const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0)));
-  for (let i = 0; i <= n; i++) plot(mask, w, h, x0 + ((x1 - x0) * i) / n, y0 + ((y1 - y0) * i) / n);
+  for (let i = 0; i <= n; i++) plot(mask, w, h, x0 + ((x1 - x0) * i) / n, y0 + ((y1 - y0) * i) / n, v);
 }
 
 /** Even-odd scanline fill of a set of rings. */
-function fillRings(mask: Uint8Array, w: number, h: number, rings: number[][]): void {
+function fillRings(mask: Grid, w: number, h: number, rings: number[][], v: number): void {
   let minY = Infinity, maxY = -Infinity;
   for (const r of rings) for (let k = 1; k < r.length; k += 2) (minY = Math.min(minY, r[k])), (maxY = Math.max(maxY, r[k]));
   const y0 = Math.max(0, Math.floor(minY)), y1 = Math.min(h - 1, Math.ceil(maxY));
@@ -87,7 +89,45 @@ function fillRings(mask: Uint8Array, w: number, h: number, rings: number[][]): v
     xs.sort((a, b) => a - b);
     for (let k = 0; k + 1 < xs.length; k += 2) {
       const a = Math.max(0, Math.ceil(xs[k] - 0.5)), b = Math.min(w - 1, Math.floor(xs[k + 1] - 0.5));
-      for (let x = a; x <= b; x++) mask[y * w + x] = 1;
+      for (let x = a; x <= b; x++) mask[y * w + x] = v;
+    }
+  }
+}
+
+/** Draw one shape into a grid with value v: strokes and Fourier curves as 1 px lines, regions filled. */
+function drawShape(mask: Grid, w: number, h: number, sh: Shape, v: number): void {
+  if (sh.kind === 'stroke') {
+    const s = sh.segs;
+    for (let o = 0; o + 7 < s.length; o += 8) {
+      const len = Math.hypot(s[o + 2] - s[o], s[o + 3] - s[o + 1]) + Math.hypot(s[o + 4] - s[o + 2], s[o + 5] - s[o + 3]) + Math.hypot(s[o + 6] - s[o + 4], s[o + 7] - s[o + 5]);
+      const n = Math.max(2, Math.ceil(len / 1.5));
+      let px = s[o], py = s[o + 1];
+      for (let i = 1; i <= n; i++) {
+        const t = i / n, u = 1 - t;
+        const a = u * u * u, b = 3 * t * u * u, c = 3 * t * t * u, d = t * t * t;
+        const x = a * s[o] + b * s[o + 2] + c * s[o + 4] + d * s[o + 6];
+        const y = a * s[o + 1] + b * s[o + 3] + c * s[o + 5] + d * s[o + 7];
+        line(mask, w, h, px, py, x, y, v);
+        px = x;
+        py = y;
+      }
+    }
+  } else if (sh.kind === 'region') {
+    fillRings(mask, w, h, sh.rings, v);
+  } else {
+    const n = Math.max(32, Math.ceil(sh.length / 1.5));
+    let px = 0, py = 0;
+    for (let i = 0; i <= n; i++) {
+      const t = i / n;
+      let x = 0, y = 0;
+      for (let j = 0; j < sh.freq.length; j++) {
+        const a = 2 * Math.PI * sh.freq[j] * t, c = Math.cos(a), s = Math.sin(a);
+        x += sh.re[j] * c - sh.im[j] * s;
+        y += sh.re[j] * s + sh.im[j] * c;
+      }
+      if (i > 0) line(mask, w, h, px, py, x, y, v);
+      px = x;
+      py = y;
     }
   }
 }
@@ -95,43 +135,20 @@ function fillRings(mask: Uint8Array, w: number, h: number, rings: number[][]): v
 /** Rasterize traced shapes to a 0/1 mask: strokes and Fourier curves as 1 px lines, regions filled. */
 export function rasterizeShapes(shapes: Shape[], w: number, h: number): Uint8Array {
   const mask = new Uint8Array(w * h);
-  for (const sh of shapes) {
-    if (sh.kind === 'stroke') {
-      const s = sh.segs;
-      for (let o = 0; o + 7 < s.length; o += 8) {
-        const len = Math.hypot(s[o + 2] - s[o], s[o + 3] - s[o + 1]) + Math.hypot(s[o + 4] - s[o + 2], s[o + 5] - s[o + 3]) + Math.hypot(s[o + 6] - s[o + 4], s[o + 7] - s[o + 5]);
-        const n = Math.max(2, Math.ceil(len / 1.5));
-        let px = s[o], py = s[o + 1];
-        for (let i = 1; i <= n; i++) {
-          const t = i / n, u = 1 - t;
-          const a = u * u * u, b = 3 * t * u * u, c = 3 * t * t * u, d = t * t * t;
-          const x = a * s[o] + b * s[o + 2] + c * s[o + 4] + d * s[o + 6];
-          const y = a * s[o + 1] + b * s[o + 3] + c * s[o + 5] + d * s[o + 7];
-          line(mask, w, h, px, py, x, y);
-          px = x;
-          py = y;
-        }
-      }
-    } else if (sh.kind === 'region') {
-      fillRings(mask, w, h, sh.rings);
-    } else {
-      const n = Math.max(32, Math.ceil(sh.length / 1.5));
-      let px = 0, py = 0;
-      for (let i = 0; i <= n; i++) {
-        const t = i / n;
-        let x = 0, y = 0;
-        for (let j = 0; j < sh.freq.length; j++) {
-          const a = 2 * Math.PI * sh.freq[j] * t, c = Math.cos(a), s = Math.sin(a);
-          x += sh.re[j] * c - sh.im[j] * s;
-          y += sh.re[j] * s + sh.im[j] * c;
-        }
-        if (i > 0) line(mask, w, h, px, py, x, y);
-        px = x;
-        py = y;
-      }
-    }
-  }
+  for (const sh of shapes) drawShape(mask, w, h, sh, 1);
   return mask;
+}
+
+/**
+ * Paint a trace the way Desmos shows it and return, per pixel, the value
+ * `valueOf(shape)` of the shape on top (-1 where nothing is drawn, i.e. white
+ * paper). Regions go first in layer order, then lines on top.
+ */
+export function paintIndex(shapes: Shape[], w: number, h: number, valueOf: (sh: Shape) => number): Int16Array {
+  const out = new Int16Array(w * h).fill(-1);
+  const ordered = shapes.slice().sort((a, b) => (a.kind === 'region' ? a.layer ?? 0 : 1e9) - (b.kind === 'region' ? b.layer ?? 0 : 1e9));
+  for (const sh of ordered) drawShape(out, w, h, sh, valueOf(sh));
+  return out;
 }
 
 /** Reference maps of a picture: thin edge map (with its distance field) and the threshold bitmap. */
@@ -207,6 +224,11 @@ export function score(res: TraceResult, ref: Reference): Score {
   return { precision, recall, iou: 0, accuracy: 1 / (1 + err), drawMs };
 }
 
+export interface ColorScoreOptions {
+  /** Compare 1 px blurs of both pictures, so speckle that happens to match noise is not rewarded. */
+  blur?: boolean;
+}
+
 /**
  * Colour accuracy of an In Color trace: paint the shapes (regions filled in
  * layer order on white; strokes and curves as 1 px lines) and compare with the
@@ -214,29 +236,113 @@ export function score(res: TraceResult, ref: Reference): Score {
  * mean colour difference is mapped so that a typical good result scores about
  * 0.8-0.9.
  */
-export function colorAccuracy(res: TraceResult, img: RgbaImage): number {
+export function colorAccuracy(res: TraceResult, img: RgbaImage, opts: ColorScoreOptions = {}): number {
   const w = img.width, h = img.height;
   const shapes = res.width === w && res.height === h ? res.shapes : scaleShapes(res.shapes, w / res.width, h / res.height);
-  const out = new Uint8ClampedArray(w * h * 3).fill(255);
-  const paint = (mask: Uint8Array, hex: string) => {
-    const v = parseInt(hex.replace('#', ''), 16);
-    const r = (v >> 16) & 255, g = (v >> 8) & 255, b = v & 255;
-    for (let i = 0; i < mask.length; i++) if (mask[i]) (out[i * 3] = r), (out[i * 3 + 1] = g), (out[i * 3 + 2] = b);
-  };
-  const ordered = shapes.slice().sort((a, b) => (a.kind === 'region' ? a.layer ?? 0 : 1e9) - (b.kind === 'region' ? b.layer ?? 0 : 1e9));
-  for (const sh of ordered) paint(rasterizeShapes([sh], w, h), sh.color ?? '#000000');
-  let sum = 0;
+  const hexes: string[] = [];
+  const ids = new Map<string, number>();
+  const idx = paintIndex(shapes, w, h, (sh) => {
+    const c = sh.color ?? '#000000';
+    let i = ids.get(c);
+    if (i === undefined) {
+      i = hexes.length;
+      hexes.push(c);
+      ids.set(c, i);
+    }
+    return i;
+  });
+  const pal = hexes.map((c) => {
+    const v = parseInt(c.replace('#', ''), 16);
+    return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+  });
+  const n = w * h;
+  const P = new Float32Array(n * 3);
+  const O = new Float32Array(n * 3);
   const d = img.data;
-  const step = Math.max(1, Math.floor((w * h) / 60000));
-  let n = 0;
-  for (let i = 0; i < w * h; i += step) {
+  for (let i = 0; i < n; i++) {
+    const c = idx[i] >= 0 ? pal[idx[i]] : WHITE;
+    P[i * 3] = c[0];
+    P[i * 3 + 1] = c[1];
+    P[i * 3 + 2] = c[2];
     const a = d[i * 4 + 3] / 255;
-    const sr = d[i * 4] * a + 255 * (1 - a), sg = d[i * 4 + 1] * a + 255 * (1 - a), sb = d[i * 4 + 2] * a + 255 * (1 - a);
-    sum += colorDistance(sr, sg, sb, out[i * 3], out[i * 3 + 1], out[i * 3 + 2]);
-    n++;
+    O[i * 3] = d[i * 4] * a + 255 * (1 - a);
+    O[i * 3 + 1] = d[i * 4 + 1] * a + 255 * (1 - a);
+    O[i * 3 + 2] = d[i * 4 + 2] * a + 255 * (1 - a);
   }
-  const mean = n ? sum / n : 0;
+  if (opts.blur) {
+    box3(P, w, h);
+    box3(O, w, h);
+  }
+  let sum = 0, cnt = 0;
+  const step = Math.max(1, Math.floor(n / 60000));
+  for (let i = 0; i < n; i += step) {
+    sum += colorDistance(O[i * 3], O[i * 3 + 1], O[i * 3 + 2], P[i * 3], P[i * 3 + 1], P[i * 3 + 2]);
+    cnt++;
+  }
+  const mean = cnt ? sum / cnt : 0;
   return 1 / (1 + mean / 12);
+}
+
+const WHITE = [255, 255, 255];
+
+/** In-place 3x3 box blur of an interleaved RGB float image. */
+function box3(a: Float32Array, w: number, h: number): void {
+  const t = new Float32Array(a.length);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++)
+      for (let c = 0; c < 3; c++) {
+        const l = x > 0 ? x - 1 : x, r = x < w - 1 ? x + 1 : x;
+        t[(y * w + x) * 3 + c] = (a[(y * w + l) * 3 + c] + a[(y * w + x) * 3 + c] + a[(y * w + r) * 3 + c]) / 3;
+      }
+  for (let y = 0; y < h; y++) {
+    const u = y > 0 ? y - 1 : y, dn = y < h - 1 ? y + 1 : y;
+    for (let x = 0; x < w; x++)
+      for (let c = 0; c < 3; c++) a[(y * w + x) * 3 + c] = (t[(u * w + x) * 3 + c] + t[(y * w + x) * 3 + c] + t[(dn * w + x) * 3 + c]) / 3;
+  }
+}
+
+/**
+ * How clean a trace looks, 0..1 (1 = no penalty). Auto Enhance multiplies its
+ * accuracy by this so it prefers smooth areas and joined lines over speckle:
+ *  - fills: drawn boundary length against the picture's real edge length
+ *    (beyond 1.3 times), plus the share of tiny regions;
+ *  - lines: number of separate strokes per length of real edges.
+ */
+export function cleanliness(res: TraceResult, ref: Reference): number {
+  const w = ref.width, h = ref.height;
+  let refEdges = 0;
+  for (let i = 0; i < ref.edges.length; i++) refEdges += ref.edges[i];
+  refEdges = Math.max(1, refEdges);
+  const scale2 = (w / res.width) * (h / res.height);
+  let f = 1;
+  if (res.mode === 'fill') {
+    const shapes = res.width === w && res.height === h ? res.shapes : scaleShapes(res.shapes, w / res.width, h / res.height);
+    const ids = new Map<string, number>();
+    const idx = paintIndex(shapes, w, h, (sh) => {
+      const c = sh.color ?? '#000000';
+      let i = ids.get(c);
+      if (i === undefined) ids.set(c, (i = ids.size));
+      return i;
+    });
+    let boundary = 0;
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if ((x < w - 1 && idx[i] !== idx[i + 1]) || (y < h - 1 && idx[i] !== idx[i + w])) boundary++;
+      }
+    let tiny = 0, regions = 0;
+    for (const sh of res.shapes)
+      if (sh.kind === 'region') {
+        regions++;
+        if (Math.abs(sh.area) * scale2 < 16) tiny++;
+      }
+    f *= 1 / (1 + 0.25 * Math.max(0, boundary / refEdges - 1.3));
+    f *= 1 / (1 + (0.6 * tiny) / Math.max(1, regions));
+  } else {
+    const expected = refEdges / 25;
+    f *= 1 / (1 + 0.1 * Math.max(0, res.shapes.length / Math.max(1, expected) - 1.5));
+  }
+  return f;
 }
 
 /** A cheap perceptual colour difference ("redmean"), roughly delta-E sized. */

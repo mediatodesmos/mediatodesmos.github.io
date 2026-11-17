@@ -1,6 +1,7 @@
 /**
- * In Color (BETA): k-means colour quantisation in CIE Lab, plus helpers to
- * colour traced shapes.
+ * In Color (BETA): k-means colour quantisation in OKLab (chroma weighted, so
+ * dark navy and dark purple stay apart), plus helpers to colour traced shapes
+ * and to match the finished colours to the picture.
  *
  * Fill mode traces "stacked" layers: colours are ordered light to dark, layer 0 is a
  * full background rectangle, and layer i covers every pixel whose colour ranks
@@ -28,22 +29,19 @@ const srgbToLinear = (c: number) => {
 const LIN = new Float32Array(256);
 for (let i = 0; i < 256; i++) LIN[i] = srgbToLinear(i);
 
+/** Chroma weight of the clustering space: hue differences count 1.5 times as much as lightness. */
+export const CHROMA_W = 1.5;
+
+/** Clustering space: OKLab scaled to delta-E-like units (L 0..100), chroma weighted. */
 function labOf(r: number, g: number, b: number, out: Float32Array, o: number): void {
-  const R = LIN[r], G = LIN[g], B = LIN[b];
-  let x = (0.4124 * R + 0.3576 * G + 0.1805 * B) / 0.95047;
-  let y = 0.2126 * R + 0.7152 * G + 0.0722 * B;
-  let z = (0.0193 * R + 0.1192 * G + 0.9505 * B) / 1.08883;
-  const f = (t: number) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
-  x = f(x);
-  y = f(y);
-  z = f(z);
-  out[o] = 116 * y - 16;
-  out[o + 1] = 500 * (x - y);
-  out[o + 2] = 200 * (y - z);
+  const [L, A, B] = toOklab([r, g, b]);
+  out[o] = L * 100;
+  out[o + 1] = A * 100 * CHROMA_W;
+  out[o + 2] = B * 100 * CHROMA_W;
 }
 
 /** Pixel colour composited over white (transparent PNGs read as paper). */
-function pixel(img: RgbaImage, i: number): RGB {
+export function pixel(img: RgbaImage, i: number): RGB {
   const d = img.data, p = i * 4;
   const a = d[p + 3] / 255;
   return [Math.round(d[p] * a + 255 * (1 - a)), Math.round(d[p + 1] * a + 255 * (1 - a)), Math.round(d[p + 2] * a + 255 * (1 - a))];
@@ -96,58 +94,36 @@ function fitError(sm: Samples, centers: Float32Array, k: number): { err: number;
 export interface AutoColor {
   /** Number of colours picked. */
   k: number;
-  /** Suggested saturation multiplier (cluster averages come out washed out). */
+  /** Suggested saturation multiplier. Colours are matched to the picture, so this is 1. */
   saturation: number;
 }
 
 /**
- * Auto Color (BETA): how many colours does this picture need? Adds colours
- * while each one still lowers the average colour error noticeably and still
- * covers at least 1% of the picture; then suggests a saturation boost that
- * restores the vividness averaging takes away.
+ * Auto Color (BETA): how many colours does this picture need? Measures the
+ * colour error for every count from 2 to 16 and picks the smallest count that
+ * gets 85% of the way from 2 colours to the best possible error. The whole
+ * curve is used because single steps are noisy (one extra colour can help
+ * little and the next a lot). Counts whose smallest colour covers under 0.4%
+ * of the picture are skipped; near-duplicates (delta E under 4) are merged.
+ * Colours are matched to the picture after tracing (matchPalette), so no
+ * saturation boost is needed.
  */
 export function autoColors(img: RgbaImage): AutoColor {
   const sm = sampleImage(img);
-  let best = 2;
-  let prev = Infinity;
-  let bestCenters = kmeans(sm, 2);
+  const fits: { k: number; err: number; ok: boolean; centers: Float32Array }[] = [];
   for (let k = 2; k <= 16; k++) {
-    const centers = k === 2 ? bestCenters : kmeans(sm, k);
+    const centers = kmeans(sm, k);
     const { err, shares } = fitError(sm, centers, k);
-    const gain = prev - err;
-    if (k > 2 && (gain < Math.max(0.55, prev * 0.06) || Math.min(...shares) < 0.01)) break;
-    best = k;
-    bestCenters = centers;
-    prev = err;
+    fits.push({ k, err, ok: k === 2 || Math.min(...shares) >= 0.004, centers });
   }
-  // Merge near-duplicate colours (delta E under 6).
-  let k = best;
-  for (let a = 0; a < best; a++)
-    for (let b = a + 1; b < best; b++) if (Math.sqrt(d2(bestCenters, a * 3, bestCenters, b * 3)) < 6) k--;
-  k = Math.max(2, Math.min(16, k));
-  return { k, saturation: saturationBoost(sm, kmeans(sm, k), k) };
-}
-
-/** How much more saturated each cluster's typical pixels are than its average colour (area-weighted, 1..1.6). */
-function saturationBoost(sm: Samples, centers: Float32Array, k: number): number {
-  const chroma: number[][] = Array.from({ length: k }, () => []);
-  for (let s = 0; s < sm.S; s++) {
-    const c = nearest(sm.lab, s * 3, centers, k);
-    chroma[c].push(Math.hypot(sm.lab[s * 3 + 1], sm.lab[s * 3 + 2]));
-  }
-  let num = 0, den = 0;
-  for (let c = 0; c < k; c++) {
-    const list = chroma[c];
-    if (list.length < 8) continue;
-    const mean = Math.hypot(centers[c * 3 + 1], centers[c * 3 + 2]);
-    if (mean < 4) continue; // greys stay grey
-    list.sort((x, y) => x - y);
-    const p75 = list[Math.floor(list.length * 0.75)];
-    num += (p75 / mean) * list.length;
-    den += list.length;
-  }
-  const r = den ? num / den : 1;
-  return Math.round(Math.max(1, Math.min(1.6, r)) * 100) / 100;
+  const e2 = fits[0].err;
+  const eMin = Math.min(...fits.map((f) => f.err));
+  const target = e2 - 0.85 * (e2 - eMin);
+  const pick = fits.find((f) => f.ok && f.err <= target + 1e-9) ?? fits.filter((f) => f.ok).pop() ?? fits[0];
+  let k = pick.k;
+  for (let a = 0; a < pick.k; a++)
+    for (let b = a + 1; b < pick.k; b++) if (Math.sqrt(d2(pick.centers, a * 3, pick.centers, b * 3)) < 4) k--;
+  return { k: Math.max(2, Math.min(16, k)), saturation: 1 };
 }
 
 /** k-means++ then Lloyd iterations on the samples (deterministic). */
@@ -355,7 +331,7 @@ export function colorIndexAt(img: RgbaImage, pts: number[], palette: RGB[]): num
 /* ------------------------------------------------ saturation and brightness */
 
 // OKLab (Bjorn Ottosson): perceptually even, so chroma and lightness edits look natural.
-function toOklab(c: RGB): [number, number, number] {
+export function toOklab(c: RGB): [number, number, number] {
   const r = LIN[Math.max(0, Math.min(255, Math.round(c[0])))], g = LIN[Math.max(0, Math.min(255, Math.round(c[1])))], b = LIN[Math.max(0, Math.min(255, Math.round(c[2])))];
   const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
   const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
@@ -384,6 +360,23 @@ export interface ColorAdjust {
   saturation: number;
   /** Lightness shift, -1..1 (about a quarter of the range at the ends). */
   brightness: number;
+}
+
+/** OKLab to sRGB; out-of-gamut colours keep their hue and lightness and lose chroma until they fit. */
+export function oklabToRgb(L: number, a: number, b: number): RGB {
+  L = Math.max(0, Math.min(1, L));
+  let lin = oklabToLinear(L, a, b);
+  if (!inGamut(lin)) {
+    const C0 = Math.hypot(a, b), h = Math.atan2(b, a);
+    let lo = 0, hi = C0;
+    for (let i = 0; i < 18; i++) {
+      const mid = (lo + hi) / 2;
+      if (inGamut(oklabToLinear(L, mid * Math.cos(h), mid * Math.sin(h)))) lo = mid;
+      else hi = mid;
+    }
+    lin = oklabToLinear(L, lo * Math.cos(h), lo * Math.sin(h));
+  }
+  return lin.map((v) => linearToSrgb(Math.max(0, Math.min(1, v)))) as RGB;
 }
 
 /**
