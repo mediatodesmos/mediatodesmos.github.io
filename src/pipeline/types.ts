@@ -30,7 +30,11 @@ export interface TraceSettings {
   color: boolean;
   /** BETA In Color: palette size (2..16). */
   colors: number;
-  /** BETA Super Enhanced: contrast stretch, denoise and sharpen before tracing. */
+  /** BETA Auto Color: pick the palette size automatically (overrides `colors`). */
+  autoColor?: boolean;
+  /** Detail brush: 1 where the user wants more detail, width*height of the traced image. */
+  detail?: Uint8Array;
+  /** Sharpen & denoise: contrast stretch, denoise and sharpen before tracing. */
   enhance: boolean;
   /** BETA Line-art cleanup: remove screentone and close small gaps in ink lines. */
   lineCleanup: boolean;
@@ -73,6 +77,8 @@ export interface StrokeShape {
   bbox: BBox;
   /** In Color: the stroke's colour (#rrggbb). Black when absent. */
   color?: string;
+  /** In Color: index into TraceResult.palette (lets colour edits skip retracing). */
+  paletteIndex?: number;
 }
 
 /** A filled region: outer ring plus holes. Rings are flat [x0,y0,x1,y1,...] without a repeated closing point. */
@@ -85,6 +91,8 @@ export interface RegionShape {
   bbox: BBox;
   /** In Color: the region's colour (#rrggbb). Black when absent. */
   color?: string;
+  /** In Color: index into TraceResult.palette. */
+  paletteIndex?: number;
   /** In Color: stacking layer (0 = background, drawn first). */
   layer?: number;
 }
@@ -108,6 +116,8 @@ export interface FourierShape {
   bbox: BBox;
   /** In Color: the curve's colour (#rrggbb). Black when absent. */
   color?: string;
+  /** In Color: index into TraceResult.palette. */
+  paletteIndex?: number;
 }
 
 export type Shape = StrokeShape | RegionShape | FourierShape;
@@ -132,6 +142,10 @@ export interface TraceResult {
   preview?: Uint8Array;
   /** Optional 256-bin luminance histogram. */
   histogram?: number[];
+  /** In Color: the palette (#rrggbb, light to dark) that shapes' paletteIndex points into. */
+  palette?: string[];
+  /** Auto Color: the colour count and saturation it picked. */
+  autoColor?: { k: number; saturation: number };
 }
 
 /** Cost of a shape in "budget units" for its mode. */

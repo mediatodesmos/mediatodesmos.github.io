@@ -19,7 +19,7 @@ import { fitBeziers } from './bezier';
 import { fourierFit } from './fourier';
 import { inkMap, removeSmallComponents } from './ink';
 import { joinChains, pruneSpurs } from './chainops';
-import { colorAt, hex, quantize, stackedLayerField, type Palette } from './color';
+import { autoColors, colorIndexAt, hex, quantize, stackedLayerField, type Palette } from './color';
 import { closeGaps, enhanceGray, median3 } from './enhance';
 import { sampleSegs } from './bezier';
 import { sampleFourier } from './fourier';
@@ -50,13 +50,19 @@ export function trace(img: RgbaImage, s: TraceSettings, opts: TraceOptions = {})
   let preview: Uint8Array | undefined;
 
   let shapes: Shape[] = [];
+  // Detail brush mask (1 = more detail), only when it matches this image's size.
+  const detail = s.detail && s.detail.length === w * h ? s.detail : null;
 
   const needsContours = s.mode === 'fill' || s.lineSource === 'contours';
   let palette: Palette | null = null;
 
+  // Auto Color (BETA): pick the number of colours for this picture.
+  const auto = s.color && s.autoColor ? autoColors(img) : null;
+  const colorCount = auto ? auto.k : s.colors;
+
   if (s.color && s.mode === 'fill') {
     // In Color fill: stacked colour layers, background rectangle first.
-    palette = quantize(img, s.colors);
+    palette = quantize(img, colorCount);
     const minArea = s.minSize * s.minSize * 0.5;
     shapes = [
       {
@@ -67,6 +73,7 @@ export function trace(img: RgbaImage, s: TraceSettings, opts: TraceOptions = {})
         bbox: [0, 0, w, h],
         color: hex(palette.colors[0]),
         layer: 0,
+        paletteIndex: 0,
       },
     ];
     for (let layer = 1; layer < palette.colors.length; layer++) {
@@ -76,6 +83,7 @@ export function trace(img: RgbaImage, s: TraceSettings, opts: TraceOptions = {})
       for (const r of regionsFromRings(rings, minArea, Math.max(1, s.smoothing * 1.3))) {
         r.color = hex(palette.colors[layer]);
         r.layer = layer;
+        r.paletteIndex = layer;
         shapes.push(r);
       }
     }
@@ -91,10 +99,10 @@ export function trace(img: RgbaImage, s: TraceSettings, opts: TraceOptions = {})
     const rings = marchingSquares(field, w, h, thr, s.invert);
     const minArea = s.minSize * s.minSize * 0.5;
     if (s.mode === 'fill') {
-      shapes = regionsFromRings(rings, minArea, s.smoothing);
+      shapes = regionsFromRings(detail ? rings.filter((r) => Math.abs(r.area) >= minArea || inDetail(r.pts, detail, w) > 0.5) : rings, detail ? minArea * 0.12 : minArea, s.smoothing);
     } else {
       const lines: Polyline[] = rings
-        .filter((r) => Math.abs(r.area) >= minArea)
+        .filter((r) => Math.abs(r.area) >= minArea || (!!detail && Math.abs(r.area) >= minArea * 0.12 && inDetail(r.pts, detail, w) > 0.5))
         .map((r) => ({ pts: r.pts, closed: true }));
       shapes = s.mode === 'fourier' ? fourierShapes(lines, s) : strokeShapes(lines, s, 0);
     }
@@ -120,24 +128,29 @@ export function trace(img: RgbaImage, s: TraceSettings, opts: TraceOptions = {})
     let chains = traceChains(thinMap, w, h, 2);
     chains = pruneSpurs(chains, Math.max(4, s.minSize));
     chains = joinChains(chains);
-    chains = chains.filter((c) => pathLength(c.pts, c.closed) >= s.minSize);
+    // Detail brush: short pieces survive where the user painted.
+    chains = chains.filter((c) => pathLength(c.pts, c.closed) >= (detail && inDetail(c.pts, detail, w) > 0.5 ? s.minSize * 0.35 : s.minSize));
     const lines = chains.map((c: Chain) => ({ pts: c.pts, closed: c.closed }));
     shapes = s.mode === 'fourier' ? fourierShapes(lines, s) : strokeShapes(lines, s, 1);
   }
 
   // In Color outline / Fourier: each shape takes the (palette-snapped) colour under it.
   if (s.color && s.mode !== 'fill') {
-    palette = quantize(img, s.colors);
+    palette = quantize(img, colorCount);
     const pal = palette.colors;
     for (const sh of shapes) {
-      if (sh.kind === 'stroke') sh.color = colorAt(img, sampleSegs(sh.segs, 3), pal);
-      else if (sh.kind === 'fourier') sh.color = colorAt(img, sampleFourier(sh, 48), pal);
+      if (sh.kind === 'region') continue;
+      const idx = colorIndexAt(img, sh.kind === 'stroke' ? sampleSegs(sh.segs, 3) : sampleFourier(sh, 48), pal);
+      sh.paletteIndex = idx;
+      sh.color = hex(pal[idx]);
     }
   }
 
-  // Budget: keep the most important shapes that fit.
+  // Budget: keep the most important shapes that fit. The detail brush multiplies the importance of what it covers.
+  const boost = new Map<Shape, number>();
+  if (detail) for (const sh of shapes) boost.set(sh, 1 + 4 * inDetail(shapePoints(sh), detail, w));
   const importance = (sh: Shape) =>
-    sh.kind === 'region' ? (sh.layer === 0 ? Infinity : Math.abs(sh.area) + 1) : sh.length;
+    (sh.kind === 'region' ? (sh.layer === 0 ? Infinity : Math.abs(sh.area) + 1) : sh.length) * (boost.get(sh) ?? 1);
   const sorted = shapes.slice().sort((a, b) => importance(b) - importance(a));
   const kept: Shape[] = [];
   let used = 0;
@@ -180,6 +193,8 @@ export function trace(img: RgbaImage, s: TraceSettings, opts: TraceOptions = {})
     },
     preview,
     histogram: opts.histogram ? hist : undefined,
+    ...(palette ? { palette: palette.colors.map(hex) } : {}),
+    ...(auto ? { autoColor: auto } : {}),
   };
 }
 
@@ -256,4 +271,26 @@ const r2 = (v: number) => Math.round(v * 100) / 100;
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
 function roundAll(a: number[]): number[] {
   return a.map(r2);
+}
+
+/** Share of the given points (flat x,y) that fall on the detail mask. */
+function inDetail(pts: number[], mask: Uint8Array, w: number): number {
+  const n = pts.length / 2;
+  if (!n) return 0;
+  const h = mask.length / w;
+  const step = Math.max(1, Math.floor(n / 64));
+  let hit = 0, tot = 0;
+  for (let i = 0; i < n; i += step) {
+    const x = Math.round(pts[2 * i]), y = Math.round(pts[2 * i + 1]);
+    tot++;
+    if (x >= 0 && y >= 0 && x < w && y < h && mask[y * w + x]) hit++;
+  }
+  return tot ? hit / tot : 0;
+}
+
+/** A few representative points of a shape (flat x,y), for the detail mask test. */
+function shapePoints(sh: Shape): number[] {
+  if (sh.kind === 'stroke') return sampleSegs(sh.segs, 2);
+  if (sh.kind === 'region') return sh.rings[0] ?? [];
+  return sampleFourier(sh, 32);
 }

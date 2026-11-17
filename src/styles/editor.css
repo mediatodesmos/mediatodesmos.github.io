@@ -1,0 +1,309 @@
+/* Picture editor: draw, touch up the cut-out, detail brush. Built from the same tokens as the workspace. */
+
+body.has-editor {
+  overflow: hidden;
+}
+
+.ed {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+  animation: ed-in 200ms ease-out;
+}
+
+/* Exit is shorter and quieter than the entrance */
+.ed.is-closing {
+  opacity: 0;
+  transform: translateY(4px);
+  transition-property: opacity, transform;
+  transition-duration: 150ms;
+  transition-timing-function: ease-in;
+  pointer-events: none;
+}
+
+@keyframes ed-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.ed-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--head-bg);
+}
+
+.ed-titles {
+  min-width: 0;
+}
+
+.ed-title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: var(--fg-strong);
+  text-wrap: balance;
+}
+
+.ed-hint {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--fg-muted);
+  text-wrap: pretty;
+}
+
+.ed-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Undo / redo: 32 px buttons with a 40 px hit area (the 8 px gap keeps them from overlapping) */
+.ed-actions .icon-btn::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+}
+
+.ed-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.ed-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 8px;
+  border-right: 1px dashed var(--line-soft);
+}
+
+.ed-tools .icon-btn {
+  width: 40px;
+  height: 40px;
+}
+
+.ed-tools .icon-btn.is-active {
+  background: var(--primary);
+  color: var(--primary-fg);
+  box-shadow: none;
+}
+
+.ed-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ed-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px 20px;
+  min-height: 56px;
+  padding: 10px 16px;
+  border-bottom: 1px dashed var(--line-soft);
+}
+
+.ed-options .slider-field,
+.ed-options .field {
+  min-width: 180px;
+  max-width: 240px;
+  margin: 0;
+}
+
+.ed-options .field-hint {
+  margin: 0;
+  align-self: center;
+}
+
+.ed-colors {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ed-color-pick {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  border: 1px dashed var(--border-hover);
+  background: conic-gradient(#d33a2c, #f2b01e, #2f9e44, #2f6fed, #7048e8, #d33a2c);
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.ed-color-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.ed-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 1px 1px, var(--line-soft) 1px, transparent 0) 0 0 / 20px 20px,
+    var(--bg);
+}
+
+.ed-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.ed-canvas[data-tool='hand'],
+.ed-canvas.is-space {
+  cursor: grab;
+}
+
+.ed-canvas.is-panning {
+  cursor: grabbing;
+}
+
+.ed-canvas[data-tool='text'] {
+  cursor: text;
+}
+
+.ed-canvas[data-tool='keep'],
+.ed-canvas[data-tool='remove'],
+.ed-canvas[data-tool='paint'],
+.ed-canvas[data-tool='unpaint'],
+.ed-canvas[data-tool='eraser'] {
+  cursor: none;
+}
+
+.ed-textbox {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 240px;
+  padding: 10px;
+  border: 1px solid var(--line-med);
+  /* concentric with the 8 px text area inside: 8 + 10 padding */
+  border-radius: 18px;
+  background: var(--card);
+  box-shadow: var(--shadow-pop);
+  animation: ed-pop 160ms ease-out;
+  transform-origin: top left;
+}
+
+@keyframes ed-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(-2px);
+  }
+}
+
+.ed-text-area {
+  width: 100%;
+  resize: vertical;
+  padding: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--input-bg);
+  color: var(--fg);
+  font-size: 16px;
+}
+
+.ed-text-area:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ring-soft);
+}
+
+.ed-textbox-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* Picture section in the settings panel */
+.picture-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bg-status {
+  color: var(--blue-400);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Auto Enhance: the progress line counts up, so keep its digits from jittering */
+.enhance {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.enhance .btn {
+  align-self: flex-start;
+}
+
+.enhance .field-hint {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ed,
+  .ed-textbox {
+    animation: none;
+  }
+
+  .ed.is-closing {
+    transition: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .ed-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .ed-actions {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .ed-body {
+    flex-direction: column-reverse;
+  }
+
+  .ed-tools {
+    flex-direction: row;
+    justify-content: center;
+    border-right: 0;
+    border-top: 1px dashed var(--line-soft);
+  }
+
+  .ed-options .slider-field,
+  .ed-options .field {
+    min-width: 140px;
+  }
+}

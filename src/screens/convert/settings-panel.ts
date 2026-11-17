@@ -3,15 +3,21 @@
 import { el, mount } from '../../ui/dom';
 import { segmented, select, slider, toggle, button } from '../../ui/components';
 import { betaGate, isBetaEnabled } from '../../account/beta';
+import { adjustPalette } from '../../pipeline/color';
+import { BG_MODEL } from '../../pipeline/bgremove';
 import type { CropAspect } from './model';
 import type { LineSource, Mode } from '../../pipeline/types';
-import { BUDGET_RANGE, MODE_INFO, presetValues, type Quality, type UiSettings, type VideoSettings } from './model';
+import { BUDGET_RANGE, ENHANCED_MAX_RES, HIGH_BUDGET_MAX, MODE_INFO, presetValues, VIDEO_MAX_RES, type Quality, type UiSettings, type VideoSettings } from './model';
 
 export interface SettingsPanelOptions {
   onChange: (patch: Partial<UiSettings>) => void;
   onVideoChange: (patch: Partial<VideoSettings>) => void;
   onBuildVideo: () => void;
   onReset: () => void;
+  /** Open the editor: draw on the picture, touch up the background cut-out, or paint extra detail. */
+  onEdit: (mode: 'draw' | 'mask' | 'detail') => void;
+  /** BETA Auto Enhance: start (with a mode) or cancel a settings search. */
+  onAutoEnhance: (mode: 'optimize' | 'max' | 'cancel') => void;
 }
 
 export class SettingsPanel {
@@ -20,9 +26,15 @@ export class SettingsPanel {
   private v: VideoSettings | null = null;
   private videoDuration = 0;
   private autoThreshold = 128;
+  private bgStatus = '';
+  private enhanceMode: 'optimize' | 'max' = 'optimize';
+  private enhanceState: { running: boolean; text: string } = { running: false, text: '' };
   private videoInfo = el('div', { class: 'field-hint' });
   private buildBtn: HTMLButtonElement | HTMLAnchorElement | null = null;
   private stale = false;
+  /** The current trace's palette (#rrggbb, light to dark) and Auto Color's pick. */
+  private palette: string[] = [];
+  private autoK: number | null = null;
   private thrHandle: { set(v: number): void } | null = null;
   private bytesPerFrame = 0;
 
@@ -39,6 +51,32 @@ export class SettingsPanel {
   set(s: UiSettings): void {
     this.s = { ...s, budgets: { ...s.budgets } };
     this.render();
+  }
+
+  /** Auto Enhance progress: running shows Cancel instead of the start button. */
+  setEnhanceStatus(running: boolean, text: string): void {
+    this.enhanceState = { running, text };
+    const box = this.el.querySelector<HTMLElement>('[data-enhance]');
+    if (box) box.replaceWith(this.renderEnhance());
+  }
+
+  /** Progress or problems of the background remover ("" hides the line). */
+  setBgStatus(text: string): void {
+    this.bgStatus = text;
+    const line = this.el.querySelector<HTMLElement>('[data-bg-status]');
+    if (line) {
+      line.textContent = text;
+      line.hidden = !text;
+    }
+  }
+
+  /** The palette of the latest trace, for the colour swatches. */
+  setPalette(palette: string[] | null, autoK: number | null): void {
+    const p = palette ?? [];
+    if (p.join() === this.palette.join() && autoK === this.autoK) return;
+    this.palette = p;
+    this.autoK = autoK;
+    if (this.s.color) this.render();
   }
 
   setAutoThreshold(t: number): void {
@@ -91,7 +129,6 @@ export class SettingsPanel {
     const usesThreshold = mode === 'fill' || s.lineSource === 'centerline' || s.lineSource === 'contours';
     const usesEdges = mode !== 'fill' && (s.lineSource === 'edges' || s.lineSource === 'ink');
     const br = BUDGET_RANGE[mode];
-    const enhanced = s.enhance && isBetaEnabled();
 
     const modeCtl = segmented<Mode>(
       [
@@ -154,11 +191,11 @@ export class SettingsPanel {
     );
 
     const merge =
-      mode === 'outline' && !this.v
+      (mode === 'outline' || mode === 'fourier') && !this.v
         ? toggle({
-            label: 'Merge small details',
+            label: 'Fewest equations',
             value: s.mergeSmall,
-            hint: 'Short strokes share one equation, so Desmos manages far fewer expressions.',
+            hint: 'All curves of a colour share one equation, so Desmos loads and redraws much faster. Turn off to inspect curves one by one.',
             onChange: (v) => this.patch({ mergeSmall: v }),
           }).el
         : null;
@@ -166,11 +203,11 @@ export class SettingsPanel {
     const res = slider({
       label: 'Working resolution',
       min: this.v ? 96 : 120,
-      max: this.v ? (enhanced ? 960 : 640) : enhanced ? 1920 : 1200,
+      max: this.v ? VIDEO_MAX_RES : ENHANCED_MAX_RES,
       step: 8,
       value: s.resolution,
       format: (v) => `${v} px`,
-      hint: 'Long side of the traced image. Higher means more detail and more equations.',
+      hint: 'Long side of the traced image, up to 1920 px (1080p) for pictures. Higher means more detail and more equations.',
       onInput: () => undefined,
       onChange: (v) => this.patch({ resolution: v }),
     });
@@ -233,7 +270,7 @@ export class SettingsPanel {
     const budget = slider({
       label: this.v ? `Max ${br.units} per frame` : `Max ${br.units}`,
       min: br.min,
-      max: this.v ? Math.min(br.max, 4000) : enhanced ? 40000 : br.max,
+      max: this.v ? Math.min(br.max, 4000) : HIGH_BUDGET_MAX,
       step: br.step,
       value: s.budgets[mode],
       format: (v) => v.toLocaleString('en-US'),
@@ -302,10 +339,17 @@ export class SettingsPanel {
       this.el,
       videoSection,
       this.section('Drawing style', modeCtl.el, el('p', { class: 'field-hint mode-blurb' }, MODE_INFO[mode].blurb), sourceCtl),
+      this.renderPicture(),
       this.section(
         'Detail',
         quality.el,
         res.el,
+        toggle({
+          label: 'Sharpen & denoise',
+          value: s.enhance,
+          hint: 'Cleans and sharpens the picture before tracing. Helps blurry or noisy photos, most of all at high resolutions.',
+          onChange: (v) => this.patch({ enhance: v }),
+        }).el,
         edge,
         usesThreshold ? thrAuto.el : null,
         usesThreshold ? el('p', { class: 'field-hint', dataset: { autoThr: '' } }, `Automatic (Otsu): ${this.autoThreshold}`) : null,
@@ -336,23 +380,30 @@ export class SettingsPanel {
       hint: s.mode === 'fill' ? 'Traces colour layers that stack like paper cut-outs.' : 'Gives each stroke the colour of the picture under it.',
       onChange: (v) => this.patch({ color: v }, true),
     });
-    const colors = s.color && !this.v
-      ? slider({
-          label: 'Colours',
-          min: 2,
-          max: 16,
-          step: 1,
-          value: s.colors,
-          hint: 'How many colours to reduce the picture to. More colours means more equations.',
-          onInput: (v) => this.patch({ colors: v }),
-        }).el
+    const inColor = s.color && !this.v;
+    const autoColor = inColor
+      ? toggle({
+          label: 'Auto Color',
+          value: s.autoColor,
+          hint: 'Finds how many colours this picture really needs, and brings back the vividness that averaging takes away.',
+          onChange: (v) => this.patch({ autoColor: v }, true),
+        })
       : null;
-    const enhance = toggle({
-      label: this.v ? 'Super Enhanced (up to 960 px)' : 'Super Enhanced (up to 1080p)',
-      value: s.enhance,
-      hint: 'Cleans and sharpens the picture first, and unlocks higher resolutions and budgets. Very detailed graphs draw slowly in Desmos.',
-      onChange: (v) => this.patch({ enhance: v }, true),
-    });
+    let colors: HTMLElement | null = null;
+    if (inColor) {
+      const ctl = slider({
+        label: s.autoColor ? 'Colours (picked automatically)' : 'Colours',
+        min: 2,
+        max: 16,
+        step: 1,
+        value: s.autoColor && this.autoK ? this.autoK : s.colors,
+        hint: s.autoColor ? 'Auto Color chose this. Turn Auto Color off to pick your own.' : 'How many colours to reduce the picture to. More colours means more equations.',
+        onInput: (v) => this.patch({ colors: v }),
+      });
+      if (s.autoColor) ctl.setDisabled(true);
+      colors = ctl.el;
+    }
+    const adjust = inColor ? this.renderColorAdjust() : null;
     const lineArt =
       s.mode !== 'fill' && (s.lineSource === 'ink' || s.lineSource === 'centerline')
         ? toggle({
@@ -389,13 +440,181 @@ export class SettingsPanel {
       : null;
     return this.section(
       'BETA features',
+      betaGate(this.renderEnhance(), 'Auto Enhance', { badge: 'top' }),
       el('p', { class: 'field-hint' }, isBetaEnabled() ? 'Thanks for signing in. These features are still being tuned.' : 'Free with an account. Sign in to try them.'),
       color ? betaGate(color.el, 'In Color') : null,
+      autoColor ? betaGate(autoColor.el, 'Auto Color') : null,
       colors ? betaGate(colors, 'In Color') : null,
-      betaGate(enhance.el, 'Super Enhanced'),
+      adjust,
       lineArt ? betaGate(lineArt.el, 'Line-art cleanup') : null,
       betaGate(crop.el, 'Crop and resize'),
       cropTools ? betaGate(cropTools, 'Crop and resize', { badge: 'none' }) : null,
+    );
+  }
+
+  /** BETA Auto Enhance: pick a goal, then let it search the settings. */
+  private renderEnhance(): HTMLElement {
+    const st = this.enhanceState;
+    const modeCtl = segmented<'optimize' | 'max'>(
+      [
+        { value: 'optimize', label: 'Optimization', title: 'As close to the picture as possible while staying quick for Desmos to draw.' },
+        { value: 'max', label: 'Max Quality', title: 'As close to the picture as possible, whatever the size.' },
+      ],
+      this.enhanceMode,
+      (v) => (this.enhanceMode = v),
+      { size: 'sm', full: true },
+    );
+    return el(
+      'div',
+      { class: 'enhance', dataset: { enhance: '' } },
+      el('div', { class: 'field-row' }, el('span', { class: 'field-label' }, 'Auto Enhance')),
+      modeCtl.el,
+      st.running
+        ? button({ label: 'Cancel', icon: 'x', variant: 'outline', size: 'sm', onClick: () => this.opts.onAutoEnhance('cancel') })
+        : button({ label: 'Auto Enhance', icon: 'wand', variant: 'primary', size: 'sm', onClick: () => this.opts.onAutoEnhance(this.enhanceMode) }),
+      el(
+        'p',
+        { class: 'field-hint', attrs: { 'aria-live': 'polite' } },
+        st.text || 'Tries many combinations of these settings and keeps the one that matches your picture best. You can still change anything afterwards.',
+      ),
+    );
+  }
+
+  /** The picture: background remover, drawing and the detail brush. */
+  private renderPicture(): HTMLElement {
+    const s = this.s;
+    const bg = toggle({
+      label: 'Remove background',
+      value: s.bgRemove,
+      hint: this.v
+        ? 'Cuts the subject out of every frame before tracing, so only it becomes equations.'
+        : 'Cuts the subject out before tracing, so only it becomes equations.',
+      onChange: (v) => this.patch({ bgRemove: v }, true),
+    });
+    const controls: (HTMLElement | null)[] = [];
+    if (s.bgRemove) {
+      controls.push(
+        segmented<'auto' | 'plain'>(
+          [
+            { value: 'auto', label: 'Automatic', icon: 'wand', title: `A small AI model finds the subject (downloads once, ${BG_MODEL.size}).` },
+            { value: 'plain', label: 'Plain colour', icon: 'fill', title: 'Removes a flat background colour that touches the edges. Instant.' },
+          ],
+          s.bgMethod,
+          (v) => this.patch({ bgMethod: v }, true),
+          { size: 'sm', full: true },
+        ).el,
+      );
+      if (s.bgMethod === 'plain') {
+        controls.push(
+          slider({
+            label: 'Colour tolerance',
+            min: 2,
+            max: 60,
+            step: 1,
+            value: s.bgTolerance,
+            hint: 'How different a colour can be from the background and still go.',
+            onInput: () => undefined,
+            onChange: (v) => this.patch({ bgTolerance: v }),
+          }).el,
+        );
+      }
+      controls.push(
+        slider({
+          label: 'Soften edges',
+          min: 0,
+          max: 6,
+          step: 0.5,
+          value: s.bgFeather,
+          format: (v) => `${v} px`,
+          onInput: () => undefined,
+          onChange: (v) => this.patch({ bgFeather: v }),
+        }).el,
+      );
+      if (!this.v) {
+        controls.push(button({ label: 'Touch up the cut-out', icon: 'brush', variant: 'outline', size: 'sm', onClick: () => this.opts.onEdit('mask') }));
+      }
+    }
+    const status = el('p', { class: 'field-hint bg-status', dataset: { bgStatus: '' }, hidden: !this.bgStatus }, this.bgStatus);
+    const tools = el(
+      'div',
+      { class: 'picture-tools' },
+      button({ label: 'Draw on it', icon: 'pen', variant: 'outline', size: 'sm', onClick: () => this.opts.onEdit('draw') }),
+      this.v ? null : button({ label: 'Detail brush', icon: 'sparkle', variant: 'ghost', size: 'sm', onClick: () => this.opts.onEdit('detail') }),
+    );
+    return this.section('Picture', bg.el, ...controls, status, tools);
+  }
+
+  /** Saturation, brightness and per-colour swatches. Changes rebuild the graph without retracing. */
+  private renderColorAdjust(): HTMLElement {
+    const s = this.s;
+    const sat = slider({
+      label: 'Saturation',
+      min: 0,
+      max: 200,
+      step: 5,
+      value: Math.round(s.saturation * 100),
+      format: (v) => `${v}%`,
+      hint: s.autoColor ? 'Auto Color set this. You can still adjust it.' : 'Makes every colour more vivid, or more muted.',
+      onInput: () => undefined,
+      onChange: (v) => this.patch({ saturation: v / 100 }, true),
+    });
+    const bright = slider({
+      label: 'Brightness',
+      min: -50,
+      max: 50,
+      step: 5,
+      value: Math.round(s.brightness * 100),
+      format: (v) => (v > 0 ? `+${v}%` : `${v}%`),
+      onInput: () => undefined,
+      onChange: (v) => this.patch({ brightness: v / 100 }, true),
+    });
+    const shown = adjustPalette(this.palette, { saturation: s.saturation, brightness: s.brightness }, s.colorOverrides);
+    const picker = el('input', { type: 'color', class: 'swatch-picker', tabIndex: -1, attrs: { 'aria-hidden': 'true' } });
+    let editing = -1;
+    picker.addEventListener('change', () => {
+      if (editing < 0) return;
+      this.patch({ colorOverrides: { ...this.s.colorOverrides, [editing]: picker.value } }, true);
+    });
+    const swatches = this.palette.length
+      ? el(
+          'div',
+          { class: 'swatches', attrs: { role: 'group', 'aria-label': 'Colours in the graph' } },
+          ...shown.map((c, i) =>
+            el('button', {
+              type: 'button',
+              class: 'swatch' + (s.colorOverrides[i] ? ' is-custom' : ''),
+              style: { background: c },
+              title: `Colour ${i + 1}: ${c}. Click to replace it.`,
+              attrs: { 'aria-label': `Colour ${i + 1}, ${c}. Replace` },
+              on: {
+                click: () => {
+                  editing = i;
+                  picker.value = c;
+                  picker.click();
+                },
+              },
+            }),
+          ),
+          picker,
+        )
+      : null;
+    const changed = s.saturation !== 1 || s.brightness !== 0 || Object.keys(s.colorOverrides).length > 0;
+    return el(
+      'div',
+      { class: 'color-adjust' },
+      sat.el,
+      bright.el,
+      swatches,
+      swatches ? el('p', { class: 'field-hint' }, 'Click a colour to replace it. Light colours sit underneath, dark ones on top.') : null,
+      changed
+        ? button({
+            label: 'Reset colours',
+            icon: 'refresh',
+            variant: 'ghost',
+            size: 'sm',
+            onClick: () => this.patch({ saturation: 1, brightness: 0, colorOverrides: {} }, true),
+          })
+        : null,
     );
   }
 

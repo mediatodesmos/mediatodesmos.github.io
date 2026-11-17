@@ -90,7 +90,7 @@ describe('image graph', () => {
   it('builds one expression per shape with valid styling', () => {
     const img = paint(80, 60, union(disk(20, 30, 10), ring(55, 30, 6, 14)));
     const res = trace(img, settings({ mode: 'fill', blur: 0 }));
-    const g = buildImageGraph(res, { strokeWidth: 2, notes: true, name: 'Test' });
+    const g = buildImageGraph(res, { strokeWidth: 2, notes: true, name: 'Test', packed: false });
     const exprs = g.state.expressions.list.filter((e) => e.type === 'expression');
     expect(exprs.length).toBe(res.shapes.length);
     expect(g.entries.length).toBe(res.shapes.length);
@@ -101,10 +101,39 @@ describe('image graph', () => {
       expect(e.color).toBe('#000000');
     }
     expect(g.state.version).toBe(11);
-    expect(g.state.graph.showGrid).toBe(false);
+    expect(g.state.graph.showGrid).toBe(true);
     expect(g.bytes).toBeGreaterThan(100);
     // notes on: a text item per shape plus the header
     expect(g.state.expressions.list.filter((e) => e.type === 'text').length).toBe(res.shapes.length + 1);
+  });
+
+  it('packed fill draws every region of a colour with one "for" list, in whole units', () => {
+    const img = paint(80, 60, union(disk(20, 30, 10), ring(55, 30, 6, 14)));
+    const res = trace(img, settings({ mode: 'fill', blur: 0 }));
+    expect(res.shapes.length).toBeGreaterThan(1);
+    const g = buildImageGraph(res, { strokeWidth: 2, notes: false });
+    const exprs = g.state.expressions.list.filter((e) => e.type === 'expression') as { latex: string; folderId?: string }[];
+    const draws = exprs.filter((e) => !e.folderId);
+    expect(draws.length).toBe(1);
+    // 80 px wide: unit 0.25 px, so lists hold whole numbers up to 320
+    expect(draws[0].latex).toBe(
+      `\\left[\\operatorname{polygon}\\left(\\left(0.25\\cdot X_{f1}\\left[S_{f1}\\left[j\\right]...E_{f1}\\left[j\\right]\\right],0.25\\cdot Y_{f1}\\left[S_{f1}\\left[j\\right]...E_{f1}\\left[j\\right]\\right]\\right)\\right)\\operatorname{for}j=\\left[1...${res.shapes.length}\\right]\\right]`,
+    );
+    const nums = (id: string) => {
+      const l = exprs.find((e) => e.latex.startsWith(id + '='))!.latex;
+      return l.slice(l.indexOf('[') + 1, l.lastIndexOf('\\right]')).split(',').map(Number);
+    };
+    const X = nums('X_{f1}'), Y = nums('Y_{f1}'), S = nums('S_{f1}'), E = nums('E_{f1}');
+    expect(X.every((v) => Number.isInteger(v))).toBe(true);
+    // Region j's slice holds its own outline (in 0.25 px units, y flipped).
+    res.shapes.forEach((sh, j) => {
+      if (sh.kind !== 'region') return;
+      const x0 = X[S[j] - 1] * 0.25, y0 = Y[S[j] - 1] * 0.25;
+      const hit = sh.rings[0].some((v, i) => i % 2 === 0 && Math.abs(v - x0) < 0.2 && Math.abs(res.height - sh.rings[0][i + 1] - y0) < 0.2);
+      expect(hit).toBe(true);
+      expect(E[j]).toBeGreaterThan(S[j] + 1);
+    });
+    expect(g.entries[0].summary).toContain(`${res.shapes.length} regions`);
   });
 
   it('outline graph uses the compact shared-function encoding', () => {
@@ -137,11 +166,61 @@ describe('image graph', () => {
       for (let s = 0; s < sh.segs.length / 8; s++) {
         const k = a + 3 * s - 1; // 0-based
         for (let j = 0; j < 4; j++) {
-          expect(X[k + j]).toBeCloseTo(sh.segs[s * 8 + 2 * j], 1);
-          expect(Y[k + j]).toBeCloseTo(res.height - sh.segs[s * 8 + 2 * j + 1], 1);
+          // decimals: 2 stores whole hundredths, and P_1 multiplies by 0.01
+          expect(X[k + j] * 0.01).toBeCloseTo(sh.segs[s * 8 + 2 * j], 1);
+          expect(Y[k + j] * 0.01).toBeCloseTo(res.height - sh.segs[s * 8 + 2 * j + 1], 1);
         }
       }
     }
+  });
+
+  it('fewest-equations outline draws every segment from one range, with fillers between strokes', () => {
+    const img = paint(90, 70, union(disk(25, 35, 15), ring(65, 35, 6, 16)));
+    const res = trace(img, settings({ mode: 'outline', lineSource: 'contours', blur: 0.6 }));
+    const strokes = res.shapes.filter((s) => s.kind === 'stroke');
+    expect(strokes.length).toBeGreaterThan(1);
+    const g = buildImageGraph(res, { strokeWidth: 2, notes: false, mergeAll: true, decimals: 2 });
+    const exprs = g.state.expressions.list.filter((x) => x.type === 'expression') as { id: string; latex: string; folderId?: string }[];
+    const draws = exprs.filter((e) => !e.folderId);
+    expect(draws.length).toBe(1);
+    expect(exprs.some((e) => e.latex === 'u=\\frac{0}{0}')).toBe(true);
+    const items = (latex: string) => latex.slice(latex.indexOf('[') + 1, latex.lastIndexOf('\\right]')).split(',');
+    const X = items(exprs.find((e) => e.latex.startsWith('X_{1}='))!.latex);
+    const Y = items(exprs.find((e) => e.latex.startsWith('Y_{1}='))!.latex);
+    const m = draws[0].latex.match(/\\left\[(\d+),(\d+)\.\.\.(\d+)\\right\]/)!;
+    const [a, step, b] = [Number(m[1]), Number(m[2]) - Number(m[1]), Number(m[3])];
+    expect(step).toBe(3);
+    // Collect the defined segments the range draws, in order.
+    const got: number[][] = [];
+    for (let k = a; k <= b; k += 3) {
+      const pts = [0, 1, 2, 3].map((j) => [X[k - 1 + j], Y[k - 1 + j]]);
+      if (pts.some(([x, y]) => x === 'u' || y === 'u')) continue;
+      got.push(pts.flatMap(([x, y]) => [Number(x) * 0.01, res.height - Number(y) * 0.01]));
+    }
+    const want = strokes.flatMap((s) => (s.kind === 'stroke' ? Array.from({ length: s.segs.length / 8 }, (_, i) => s.segs.slice(i * 8, i * 8 + 8)) : []));
+    expect(got.length).toBe(want.length);
+    got.forEach((seg, i) => seg.forEach((v, j) => expect(v).toBeCloseTo(want[i][j], 1)));
+  });
+
+  it('fewest-equations Fourier draws every curve from shared term lists', () => {
+    const img = paint(90, 70, union(disk(25, 35, 15), ring(65, 35, 6, 16)));
+    const res = trace(img, settings({ mode: 'fourier', lineSource: 'contours', blur: 0.6 }));
+    const curves = res.shapes.filter((s): s is FourierShape => s.kind === 'fourier');
+    expect(curves.length).toBeGreaterThan(1);
+    const g = buildImageGraph(res, { strokeWidth: 2, notes: false, mergeAll: true });
+    const exprs = g.state.expressions.list.filter((x) => x.type === 'expression') as { latex: string; folderId?: string }[];
+    const draws = exprs.filter((e) => !e.folderId);
+    expect(draws.length).toBe(1);
+    expect(draws[0].latex).toContain(`\\operatorname{for}j=\\left[1...${curves.length}\\right]`);
+    const nums = (id: string) => {
+      const l = exprs.find((e) => e.latex.startsWith(id + '='))!.latex;
+      return l.slice(l.indexOf('[') + 1, l.lastIndexOf('\\right]')).split(',').map(Number);
+    };
+    const K = nums('K_{z1}'), S = nums('S_{z1}'), E = nums('E_{z1}');
+    curves.forEach((sh, j) => {
+      const c = fourierColumns(sh, res.height);
+      expect(K.slice(S[j] - 1, E[j])).toEqual(c.k);
+    });
   });
 
   it('flips Fourier coefficients into Desmos coordinates', () => {
@@ -219,12 +298,21 @@ describe('video graph', () => {
     expect(U && U.type === 'expression' && U.latex).toBe('U_{1}=\\left[2,2,2,24\\right]');
   });
 
-  it('fill video uses one bridged polygon per frame', () => {
+  it('fill video draws one polygon per region of the current frame', () => {
     const img = paint(60, 40, union(disk(15, 20, 8), ring(42, 20, 4, 10)));
     const fr = trace(img, settings({ mode: 'fill', blur: 0 }));
-    const v = buildVideoGraph([fr, fr], { fps: 5, strokeWidth: 2 });
+    const fr2 = trace(paint(60, 40, disk(30, 20, 9)), settings({ mode: 'fill', blur: 0 }));
+    const v = buildVideoGraph([fr, fr2], { fps: 5, strokeWidth: 2 });
     expect(v.kind).toBe('fill');
-    const draw = v.state.expressions.list.find((e) => e.id === 'd1');
-    expect(draw && draw.type === 'expression' && draw.latex.startsWith('\\operatorname{polygon}')).toBe(true);
+    const get = (id: string) => {
+      const e = v.state.expressions.list.find((x) => x.id === id);
+      return e && e.type === 'expression' ? e.latex : '';
+    };
+    expect(get('d1')).toMatch(/^\\left\[\\operatorname\{polygon\}.*\\operatorname\{for\}j=\\left\[U_\{1\}\\left\[F\\right\]\.\.\.V_\{1\}\\left\[F\\right\]\\right\]\\right\]$/);
+    // Region 1 is the undefined placeholder; frame 1 owns regions 2..1+n, frame 2 the next one.
+    const n = fr.shapes.length;
+    expect(get('u1')).toBe(`U_{1}=\\left[2,${2 + n}\\right]`);
+    expect(get('v1')).toBe(`V_{1}=\\left[${1 + n},${2 + n}\\right]`);
+    expect(get('s1').startsWith('S_{p1}=\\left[1,2,')).toBe(true);
   });
 });

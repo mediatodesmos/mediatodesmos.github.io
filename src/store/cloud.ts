@@ -38,13 +38,39 @@ export interface CloudProject {
 
 export class CloudError extends Error {}
 
+/**
+ * Firestore refuses documents that contain `undefined` anywhere, so values are
+ * stripped before writing (older local projects can still carry them).
+ */
+export function firestoreSafe<T>(value: T): T {
+  if (Array.isArray(value)) return value.filter((v) => v !== undefined).map((v) => firestoreSafe(v)) as T;
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) if (v !== undefined) out[k] = firestoreSafe(v);
+    return out as T;
+  }
+  return value;
+}
+
+type FirestoreModule = typeof import('firebase/firestore');
+let storePromise: Promise<{ fs: FirestoreModule; store: import('firebase/firestore').Firestore }> | null = null;
+
 async function db() {
   if (!isBetaEnabled()) throw new CloudError('Sign in to use cloud projects.');
   const app = await getFirebaseApp();
   const uid = getAuthState().user?.uid;
   if (!app || !uid || uid === 'preview') throw new CloudError('Cloud projects need sign-in to be set up first.');
-  const fs = await import('firebase/firestore');
-  return { fs, store: fs.getFirestore(app), uid };
+  storePromise ??= import('firebase/firestore').then((fs) => {
+    let store: import('firebase/firestore').Firestore;
+    try {
+      store = fs.initializeFirestore(app, { ignoreUndefinedProperties: true });
+    } catch {
+      store = fs.getFirestore(app); // already initialised elsewhere
+    }
+    return { fs, store };
+  });
+  const { fs, store } = await storePromise;
+  return { fs, store, uid };
 }
 
 export async function saveCloudProject(p: Project): Promise<CloudProject> {
@@ -53,7 +79,7 @@ export async function saveCloudProject(p: Project): Promise<CloudProject> {
   if (packed.length > CLOUD_LIMIT) {
     throw new CloudError(`This graph is too big for cloud projects (${(packed.length / 1e6).toFixed(1)} MB compressed, the limit is 5 MB). Export it instead.`);
   }
-  const meta: CloudProject = {
+  const meta: CloudProject = firestoreSafe({
     id: p.id,
     name: p.name,
     kind: p.kind,
@@ -62,7 +88,7 @@ export async function saveCloudProject(p: Project): Promise<CloudProject> {
     stats: p.stats,
     thumb: p.thumb.length <= THUMB_LIMIT ? p.thumb : '',
     size: packed.length,
-  };
+  });
   const ref = fs.doc(store, 'users', uid, 'projects', p.id);
   const old = await fs.getDocs(fs.collection(ref, 'chunks'));
   const batch = fs.writeBatch(store);
@@ -70,7 +96,11 @@ export async function saveCloudProject(p: Project): Promise<CloudProject> {
   const count = Math.ceil(packed.length / CHUNK);
   for (let i = 0; i < count; i++) batch.set(fs.doc(ref, 'chunks', String(i)), { data: packed.slice(i * CHUNK, (i + 1) * CHUNK) });
   batch.set(ref, { ...meta, chunks: count });
-  await batch.commit();
+  try {
+    await batch.commit();
+  } catch (err) {
+    throw new CloudError(`Could not save to the cloud: ${err instanceof Error ? err.message : String(err)}`);
+  }
   return meta;
 }
 

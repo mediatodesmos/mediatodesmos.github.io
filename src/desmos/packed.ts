@@ -39,11 +39,34 @@ export const xName = (c: number | string) => `X_{${c}}`;
 export const yName = (c: number | string) => `Y_{${c}}`;
 export const pName = (c: number | string) => `P_{${c}}`;
 
-/** P_c(t,k) = (B(t,X_c[k],..,X_c[k+3]), B(t,Y_c[k],..,Y_c[k+3])) */
-export function pointFn(c: number | string): string {
+/**
+ * Coordinate unit: point lists store whole numbers of this many pixels, and
+ * the shared functions multiply back. Picked so coordinates stay within 3
+ * digits (a 480 px image is stored in half pixels, 0..960; 1920 px in 2 px
+ * steps), which is both smaller and more precise than one decimal place.
+ */
+export function coordUnit(W: number, H: number): number {
+  const m = Math.max(W, H);
+  for (const u of [0.25, 0.5, 1, 2, 4]) if (m / u <= 999) return u;
+  return 8;
+}
+
+/** "0.5" for a scale factor, or "" when it is 1. */
+export const unitPrefix = (u: number): string => (u === 1 ? '' : String(u));
+
+/** `u\cdot ` before a list (a number right before a list would be read as indexing). */
+export const unitTimes = (u: number): string => (u === 1 ? '' : `${u}\\cdot `);
+
+/** A list of coordinates stored in whole units (strings like "u" pass through). */
+export function unitList(values: (number | string)[], u: number): string {
+  return '\\left[' + values.map((v) => (typeof v === 'number' ? String(Math.round(v / u) || 0) : v)).join(',') + '\\right]';
+}
+
+/** P_c(t,k) = u (B(t,X_c[k],..,X_c[k+3]), B(t,Y_c[k],..,Y_c[k+3])), with u the coordinate unit. */
+export function pointFn(c: number | string, u = 1): string {
   const X = xName(c), Y = yName(c);
   const at = (L: string, o: number) => `${L}\\left[k${o ? `+${o}` : ''}\\right]`;
-  const b = (L: string) => `B\\left(t,${at(L, 0)},${at(L, 1)},${at(L, 2)},${at(L, 3)}\\right)`;
+  const b = (L: string) => `${unitPrefix(u)}B\\left(t,${at(L, 0)},${at(L, 1)},${at(L, 2)},${at(L, 3)}\\right)`;
   return `${pName(c)}\\left(t,k\\right)=\\left(${b(X)},${b(Y)}\\right)`;
 }
 

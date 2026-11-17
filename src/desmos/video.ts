@@ -15,8 +15,8 @@
 
 import type { Shape, StrokeShape, TraceResult } from '../pipeline/types';
 import { INK, bridgedPath, regionRings, type BuiltGraph, type InspectorEntry } from './build';
-import { num, polygonLatex, slice } from './latex';
-import { BEZIER_FN, BEZIER_FN_ID, LIST_CAP, UNDEF_ID, UNDEF_VAR, packedList, pName, pointFn, strokePoints, xName, yName } from './packed';
+import { num, polygonLatex } from './latex';
+import { BEZIER_FN, BEZIER_FN_ID, LIST_CAP, UNDEF_ID, UNDEF_VAR, coordUnit, packedList, pName, pointFn, strokePoints, unitList, unitTimes, xName, yName } from './packed';
 import { emptyState, imageViewport, stateWeight, type DesmosItem } from './state';
 
 /** Max data items per chunk list (item 1 is the undefined placeholder). */
@@ -52,6 +52,9 @@ interface ChunkAcc {
   xs: Item[];
   ys: Item[];
   segs: number;
+  /** Fill: where each region's points start and end (region 1 is the undefined placeholder). */
+  starts: number[];
+  ends: number[];
 }
 
 /** Where a frame's data lives: chunk index, first item, and (outline) last-segment offset / (fill) last item. */
@@ -80,16 +83,21 @@ function outlineFrame(shapes: Shape[], H: number): { xs: Item[]; ys: Item[]; seg
   return { xs, ys, segs };
 }
 
-function fillFrame(shapes: Shape[], H: number): { xs: Item[]; ys: Item[] } {
-  const rings: { pts: number[]; hole: boolean }[] = [];
-  for (const sh of shapes) if (sh.kind === 'region') rings.push(...regionRings(sh, H));
-  const path = bridgedPath(rings);
+/** Fill frame data: each region's outline (holes bridged in), end to end, plus each region's point count. */
+function fillFrame(shapes: Shape[], H: number): { xs: Item[]; ys: Item[]; lens: number[] } {
   const xs: Item[] = [], ys: Item[] = [];
-  for (let i = 0; i < path.length; i += 2) {
-    xs.push(path[i]);
-    ys.push(path[i + 1]);
+  const lens: number[] = [];
+  for (const sh of shapes) {
+    if (sh.kind !== 'region') continue;
+    const path = bridgedPath(regionRings(sh, H));
+    if (path.length < 6) continue;
+    for (let i = 0; i < path.length; i += 2) {
+      xs.push(path[i]);
+      ys.push(path[i + 1]);
+    }
+    lens.push(path.length / 2);
   }
-  return { xs, ys };
+  return { xs, ys, lens };
 }
 
 export function buildVideoGraph(frames: TraceResult[], opts: VideoBuildOptions): BuiltVideo {
@@ -98,10 +106,10 @@ export function buildVideoGraph(frames: TraceResult[], opts: VideoBuildOptions):
   const H = frames[0].height;
   const N = frames.length;
   const fill = frames[0].mode === 'fill';
-  const decimals = opts.decimals ?? (Math.max(W, H) >= 500 ? 0 : 1);
+  const unit = opts.decimals !== undefined ? Number((10 ** -opts.decimals).toFixed(opts.decimals)) : coordUnit(W, H);
 
   const chunks: ChunkAcc[] = [];
-  const fresh = (): ChunkAcc => ({ xs: ['u'], ys: ['u'], segs: 0 });
+  const fresh = (): ChunkAcc => ({ xs: ['u'], ys: ['u'], segs: 0, starts: [1], ends: [1] });
   let cur = fresh();
   chunks.push(cur);
   const placement: (Placement | null)[] = [];
@@ -113,7 +121,38 @@ export function buildVideoGraph(frames: TraceResult[], opts: VideoBuildOptions):
       repeated++;
       return;
     }
-    const data = fill ? fillFrame(fr.shapes, H) : outlineFrame(fr.shapes, H);
+    if (fill) {
+      const data = fillFrame(fr.shapes, H);
+      let { xs, ys, lens } = data;
+      if (xs.length > CHUNK_CAP - 1) {
+        // A single frame larger than a list: keep whole regions that fit (the budget normally prevents this).
+        let n = 0, keep = 0;
+        while (keep < lens.length && n + lens[keep] <= CHUNK_CAP - 1) n += lens[keep++];
+        lens = lens.slice(0, keep);
+        xs = xs.slice(0, n);
+        ys = ys.slice(0, n);
+      }
+      if (lens.length === 0) {
+        placement.push(null);
+        return;
+      }
+      if (cur.xs.length + xs.length > CHUNK_CAP) {
+        cur = fresh();
+        chunks.push(cur);
+      }
+      const first = cur.starts.length + 1; // region index, 1-based
+      let p = cur.xs.length + 1;
+      for (const len of lens) {
+        cur.starts.push(p);
+        cur.ends.push(p + len - 1);
+        p += len;
+      }
+      cur.xs.push(...xs);
+      cur.ys.push(...ys);
+      placement.push({ chunk: chunks.length - 1, a: first, b: first + lens.length - 1 });
+      return;
+    }
+    const data = outlineFrame(fr.shapes, H);
     let { xs, ys } = data;
     if (xs.length === 0) {
       placement.push(null);
@@ -121,7 +160,7 @@ export function buildVideoGraph(frames: TraceResult[], opts: VideoBuildOptions):
     }
     if (xs.length > CHUNK_CAP - 1) {
       // A single frame larger than a list: keep what fits (the budget normally prevents this).
-      const keep = fill ? CHUNK_CAP - 1 : CHUNK_CAP - 1 - ((CHUNK_CAP - 2) % 3);
+      const keep = CHUNK_CAP - 1 - ((CHUNK_CAP - 2) % 3);
       xs = xs.slice(0, keep);
       ys = ys.slice(0, keep);
     }
@@ -132,9 +171,9 @@ export function buildVideoGraph(frames: TraceResult[], opts: VideoBuildOptions):
     const a = cur.xs.length + 1; // 1-based
     cur.xs.push(...xs);
     cur.ys.push(...ys);
-    const segs = fill ? 0 : Math.floor((xs.length - 1) / 3);
+    const segs = Math.floor((xs.length - 1) / 3);
     cur.segs += segs;
-    placement.push({ chunk: chunks.length - 1, a, b: fill ? a + xs.length - 1 : segs - 1 });
+    placement.push({ chunk: chunks.length - 1, a, b: segs - 1 });
   });
 
   const state = emptyState(imageViewport(W, H));
@@ -195,16 +234,25 @@ export function buildVideoGraph(frames: TraceResult[], opts: VideoBuildOptions):
     items.push({ type: 'expression', id: `v${c}`, folderId: 'm2d-data', latex: `${second}=${packedList(V, 0)}` });
     const X = fill ? `X_{p${c}}` : xName(c);
     const Y = fill ? `Y_{p${c}}` : yName(c);
-    items.push({ type: 'expression', id: `x${c}`, folderId: 'm2d-data', latex: `${X}=${packedList(ch.xs, decimals)}` });
-    items.push({ type: 'expression', id: `y${c}`, folderId: 'm2d-data', latex: `${Y}=${packedList(ch.ys, decimals)}` });
+    items.push({ type: 'expression', id: `x${c}`, folderId: 'm2d-data', latex: `${X}=${unitList(ch.xs, unit)}` });
+    items.push({ type: 'expression', id: `y${c}`, folderId: 'm2d-data', latex: `${Y}=${unitList(ch.ys, unit)}` });
     if (!fill) {
-      items.push({ type: 'expression', id: `p${c}`, folderId: 'm2d-data', latex: pointFn(c) });
+      items.push({ type: 'expression', id: `p${c}`, folderId: 'm2d-data', latex: pointFn(c, unit) });
       dataIds.push(`p${c}`);
+    } else {
+      items.push({ type: 'expression', id: `s${c}`, folderId: 'm2d-data', latex: `S_{p${c}}=${packedList(ch.starts, 0)}` });
+      items.push({ type: 'expression', id: `e${c}`, folderId: 'm2d-data', latex: `E_{p${c}}=${packedList(ch.ends, 0)}` });
+      dataIds.push(`s${c}`, `e${c}`);
     }
     const drawId = `d${c}`;
     let latex: string;
     if (fill) {
-      latex = polygonLatex(slice(X, `U_{${c}}`, `V_{${c}}`), slice(Y, `U_{${c}}`, `V_{${c}}`));
+      // One polygon per region of frame F: regions U[F]...V[F], region j's points S[j]...E[j].
+      const idx = `\\left[S_{p${c}}\\left[j\\right]...E_{p${c}}\\left[j\\right]\\right]`;
+      const ut = unitTimes(unit);
+      latex =
+        `\\left[${polygonLatex(`${ut}${X}${idx}`, `${ut}${Y}${idx}`)}` +
+        `\\operatorname{for}j=\\left[U_{${c}}\\left[F\\right]...V_{${c}}\\left[F\\right]\\right]\\right]`;
       items.push({ type: 'expression', id: drawId, color: INK, latex, fillOpacity: '1', lines: false, lineOpacity: '1' });
     } else {
       // "3\cdot": a list right after a number would be read as indexing the number.
@@ -218,9 +266,9 @@ export function buildVideoGraph(frames: TraceResult[], opts: VideoBuildOptions):
       title: chunks.length > 1 ? `Draw frames ${a} to ${b}` : 'Draw the current frame',
       summary: `${fill ? 'Filled polygon' : 'Bezier curves'} for frames ${a} to ${b}: ${amount} stored in chunk ${c}`,
       explain: fill
-        ? `Draws frame F. U_${c}[F] and V_${c}[F] are the first and last positions of frame F's points in X_p${c} and Y_p${c}, and the slice list[U...V] ` +
-          `picks out only those. polygon() fills the outlines of that frame; holes run the opposite way and are joined by zero-width bridges, so they stay empty. ` +
-          `When F belongs to another chunk, both indexes point at item 1, which is undefined, so this expression draws nothing.`
+        ? `Draws frame F. U_${c}[F] and V_${c}[F] are the first and last region numbers of frame F, and S_p${c}[j], E_p${c}[j] say where region j's outline ` +
+          `starts and ends in X_p${c} and Y_p${c}. The "for j" list builds one polygon() per region of the frame; holes run the opposite way and are joined by ` +
+          `zero-width bridges, so they stay empty. When F belongs to another chunk, both indexes point at region 1, which is undefined, so this expression draws nothing.`
         : `Draws frame F. U_${c}[F] is where frame F's first Bezier segment starts in the point lists X_${c} and Y_${c}, and N_${c}[F] + 1 is how many ` +
           `segments it has. U + 3[0...N] lists every segment start (neighbouring segments share end points, so starts are 3 apart), and P_${c} draws ` +
           `each one with the Bezier function B. Separate strokes are split by two undefined fillers (u), so the joins between them draw nothing. ` +

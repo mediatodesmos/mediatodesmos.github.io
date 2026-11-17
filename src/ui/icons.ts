@@ -24,7 +24,10 @@ export type IconName =
   | 'arrow-left' | 'braces' | 'histogram' | 'webcam'
   // round 2: accounts, theme, tour, BETA tools
   | 'user' | 'log-in' | 'log-out' | 'cloud' | 'sun' | 'moon' | 'compass' | 'crop' | 'palette' | 'axes'
-  | 'compare' | 'flask' | 'mail' | 'key';
+  | 'compare' | 'flask' | 'mail' | 'key'
+  // round 3: drawing and picture tools
+  | 'brush' | 'eraser' | 'line' | 'square' | 'circle' | 'bucket' | 'type' | 'undo' | 'redo' | 'hand'
+  | 'brush-plus' | 'brush-minus' | 'font' | 'scissors';
 
 export interface IconOptions {
   size?: number;
@@ -145,6 +148,21 @@ const ICONS: Record<IconName, string> = {
   flask: 'M9.5 3.5h5|M10.5 3.5v5.25L5.2 18.1A1.6 1.6 0 0 0 6.6 20.5h10.8a1.6 1.6 0 0 0 1.4-2.4L13.5 8.75V3.5|M7.75 14h8.5',
   mail: 'R 3 5.5 18 13 2|M3.5 7l8.5 6 8.5-6',
   key: 'C 8 15.5 3.5|M10.6 12.9L20 3.5|M16.5 7l2.5 2.5|M14 9.5l2 2',
+  // Round brush: handle, ferrule and a curved tip.
+  brush: 'M20.5 3.5l-8.75 8.75|M11.25 10.75l2 2|M9.6 13.1a3.1 3.1 0 0 0-4.35.35c-.9 1-.5 2.6-1.75 3.55-.4.3-.3.95.2 1.05 2.4.55 5.1.05 6.35-1.45a3 3 0 0 0-.45-3.5z',
+  eraser: 'M8.5 20.5h12|M3.9 14.6l9.2-9.2a1.8 1.8 0 0 1 2.5 0l3.5 3.5a1.8 1.8 0 0 1 0 2.5l-8.6 8.6a1.8 1.8 0 0 1-1.3.5H8.4a1.8 1.8 0 0 1-1.3-.5l-3.2-3.2a1.6 1.6 0 0 1 0-2.2z|M9.75 8.75l6.5 6.5',
+  line: 'M4.5 19.5l15-15|C 4.5 19.5 1.25|C 19.5 4.5 1.25',
+  square: 'R 4 4 16 16 2',
+  circle: 'C 12 12 8.5',
+  bucket: 'M5.2 11.3l6.5-6.5 7 7-6.5 6.5a1.8 1.8 0 0 1-2.5 0l-4.5-4.5a1.8 1.8 0 0 1 0-2.5z|M5 11.5h13.75|M9.5 3l2.2 1.8|M20.5 15.5c0 1-.55 1.9-1.25 1.9S18 16.5 18 15.5c0-.85 1.25-2.5 1.25-2.5s1.25 1.65 1.25 2.5z',
+  type: 'M5 6.5V4.5h14v2|M12 4.5v15|M9 19.5h6',
+  undo: 'M9 14.5L4 9.5l5-5|M4 9.5h10.5a5.5 5.5 0 0 1 0 11H11',
+  redo: 'M15 14.5l5-5-5-5|M20 9.5H9.5a5.5 5.5 0 0 0 0 11H13',
+  hand: 'M8.5 12.5V5.25a1.5 1.5 0 0 1 3 0V11|M11.5 10.5V3.75a1.5 1.5 0 0 1 3 0v6.75|M14.5 10.5V5.25a1.5 1.5 0 0 1 3 0V14a7 7 0 0 1-7 7h-.6a6.4 6.4 0 0 1-4.9-2.3l-2.6-3.15a1.6 1.6 0 0 1 2.35-2.15L8.5 15',
+  'brush-plus': 'M20.5 3.5l-8.75 8.75|M11.25 10.75l2 2|M9.6 13.1a3.1 3.1 0 0 0-4.35.35c-.9 1-.5 2.6-1.75 3.55-.4.3-.3.95.2 1.05 2.4.55 5.1.05 6.35-1.45a3 3 0 0 0-.45-3.5z|M17.5 15v6|M14.5 18h6',
+  'brush-minus': 'M20.5 3.5l-8.75 8.75|M11.25 10.75l2 2|M9.6 13.1a3.1 3.1 0 0 0-4.35.35c-.9 1-.5 2.6-1.75 3.55-.4.3-.3.95.2 1.05 2.4.55 5.1.05 6.35-1.45a3 3 0 0 0-.45-3.5z|M14.5 18h6',
+  font: 'M3.5 19.5l5.5-15 5.5 15|M5.6 14h6.8|M15.5 13.25a2.75 2.75 0 1 1 0 5.5 2.75 2.75 0 0 1 0-5.5z|M18.25 12.5v7',
+  scissors: 'C 6 6.5 2.75|C 6 17.5 2.75|M8.4 8.1L20 18|M8.4 15.9L20 6|M12.6 12h.01',
 };
 
 export const ICON_NAMES = Object.keys(ICONS) as IconName[];

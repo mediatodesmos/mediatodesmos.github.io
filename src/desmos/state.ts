@@ -88,11 +88,12 @@ export function emptyState(viewport: Viewport): DesmosState {
     randomSeed: randomSeed(),
     graph: {
       viewport,
-      showGrid: false,
-      showXAxis: false,
-      showYAxis: false,
-      xAxisNumbers: false,
-      yAxisNumbers: false,
+      // Desmos' normal coordinate plane: grid, axes and axis numbers.
+      showGrid: true,
+      showXAxis: true,
+      showYAxis: true,
+      xAxisNumbers: true,
+      yAxisNumbers: true,
       polarNumbers: false,
     },
     expressions: { list: [] },

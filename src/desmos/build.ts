@@ -6,7 +6,7 @@
 import type { BBox, FourierShape, RegionShape, Shape, StrokeShape, TraceResult } from '../pipeline/types';
 import { bezierLatex, flipY, fourierLatex, list, num, polygonLatex } from './latex';
 import { emptyState, imageViewport, stateWeight, type DesmosExpression, type DesmosItem, type DesmosState } from './state';
-import { BEZIER_FN, BEZIER_FN_ID, FOURIER_FN, FOURIER_FN_ID, LIST_CAP, packedList, pName, pointFn, rangeLatex, strokePoints, xName, yName } from './packed';
+import { BEZIER_FN, BEZIER_FN_ID, FOURIER_FN, FOURIER_FN_ID, LIST_CAP, UNDEF_ID, UNDEF_VAR, coordUnit, packedList, pName, pointFn, rangeLatex, strokePoints, unitList, unitTimes, xName, yName } from './packed';
 
 export const INK = '#000000';
 export const HIGHLIGHT = '#2f6fed';
@@ -47,6 +47,8 @@ export interface BuildOptions {
   mergeBelow?: number;
   /** Outline: compact shared-function encoding (default true). */
   packed?: boolean;
+  /** Outline: draw every stroke of a colour with one equation per chunk (fewest expressions). */
+  mergeAll?: boolean;
 }
 
 export interface BuiltGraph {
@@ -79,9 +81,15 @@ export function buildImageGraph(res: TraceResult, opts: BuildOptions): BuiltGrap
   });
 
   const decimals = opts.decimals ?? (Math.max(W, H) >= 500 ? 0 : 1);
+  // Point lists store whole numbers of `unit` px (see coordUnit); an explicit `decimals` means units of 10^-decimals.
+  const unit = opts.decimals !== undefined ? Number((10 ** -opts.decimals).toFixed(opts.decimals)) : coordUnit(W, H);
 
   if (res.mode === 'outline' && opts.packed !== false) {
-    addPackedStrokes(res, opts, decimals, items, entries);
+    addPackedStrokes(res, opts, unit, items, entries);
+  } else if (res.mode === 'fill' && opts.packed !== false) {
+    addPackedRegions(res, opts, unit, items, entries);
+  } else if (res.mode === 'fourier' && opts.packed !== false && opts.mergeAll) {
+    addMergedFourier(res, opts, decimals + 1, items, entries);
   } else {
     const fourier = res.mode === 'fourier' && opts.packed !== false;
     if (fourier) {
@@ -93,7 +101,7 @@ export function buildImageGraph(res: TraceResult, opts: BuildOptions): BuiltGrap
       if (fourier && sh.kind === 'fourier') {
         const c = fourierColumns(sh, H);
         const standalone = expr.latex;
-        expr.latex = `Z\\left(t,${list(c.k, 0)},${list(c.re, decimals + 1)},${list(c.im, decimals + 1)}\\right)`;
+        expr.latex = `Z\\left(t,${list(c.k, 0)},${termList(c.re, c, decimals + 1)},${termList(c.im, c, decimals + 1)}\\right)`;
         const entry = describeShape(sh, expr.latex, W, H);
         entry.standalone = standalone;
         entry.explain +=
@@ -122,8 +130,104 @@ export function buildImageGraph(res: TraceResult, opts: BuildOptions): BuiltGrap
   return { state, entries, width: W, height: H, bytes: w.bytes, expressions: w.expressions };
 }
 
+/**
+ * Outline, fewest equations: strokes of one colour are laid end to end in the
+ * point lists with two undefined fillers (u) between them, so every segment
+ * start is exactly 3 apart and a single P_c(t,[a,a+3...b]) draws them all (the
+ * filler "segments" are undefined and draw nothing). One expression per colour
+ * per chunk instead of one per stroke: much lighter for Desmos to manage.
+ */
+function addMergedStrokes(res: TraceResult, opts: BuildOptions, unit: number, items: DesmosItem[], entries: InspectorEntry[]): void {
+  const { height: H } = res;
+  const strokes = res.shapes.filter((s): s is StrokeShape => s.kind === 'stroke' && s.segs.length >= 8);
+  // Group by colour (first appearance order) so each colour is one run.
+  const byColor = new Map<string, StrokeShape[]>();
+  for (const sh of strokes) {
+    const color = sh.color ?? INK;
+    const g = byColor.get(color);
+    if (g) g.push(sh);
+    else byColor.set(color, [sh]);
+  }
+  interface Chunk {
+    xs: (number | string)[];
+    ys: (number | string)[];
+  }
+  interface Run {
+    c: number;
+    color: string;
+    a: number;
+    b: number;
+    strokes: number;
+    segs: number;
+  }
+  const chunks: Chunk[] = [];
+  const runs: Run[] = [];
+  let cur: Chunk | null = null;
+  let run: Run | null = null;
+  for (const [color, list] of byColor) {
+    run = null;
+    for (const sh of list) {
+      const p = strokePoints(sh.segs, H);
+      const n = sh.segs.length / 8;
+      const joinable = run && cur && cur.xs.length + 2 + p.xs.length <= LIST_CAP;
+      if (!joinable) {
+        // A new run starts at the next point of the chunk, or in a fresh chunk when full.
+        if (!cur || cur.xs.length + p.xs.length > LIST_CAP) {
+          cur = { xs: [], ys: [] };
+          chunks.push(cur);
+        }
+        const a = cur.xs.length + 1;
+        run = { c: chunks.length, color, a, b: a + 3 * (n - 1), strokes: 1, segs: n };
+        runs.push(run);
+        cur.xs.push(...p.xs);
+        cur.ys.push(...p.ys);
+        continue;
+      }
+      cur!.xs.push('u', 'u', ...p.xs);
+      cur!.ys.push('u', 'u', ...p.ys);
+      // the filler bridge counts as one (undefined) segment, then n real ones
+      run!.b += 3 * (n + 1);
+      run!.strokes++;
+      run!.segs += n;
+    }
+  }
+
+  items.push({ type: 'folder', id: 'm2d-curves', title: 'Curve data: control points and the Bezier function', collapsed: true });
+  items.push({ type: 'expression', id: UNDEF_ID, folderId: 'm2d-curves', latex: UNDEF_VAR });
+  items.push({ type: 'expression', id: BEZIER_FN_ID, folderId: 'm2d-curves', latex: BEZIER_FN });
+  chunks.forEach((ch, i) => {
+    const c = i + 1;
+    items.push({ type: 'expression', id: `cx${c}`, folderId: 'm2d-curves', latex: `${xName(c)}=${unitList(ch.xs, unit)}` });
+    items.push({ type: 'expression', id: `cy${c}`, folderId: 'm2d-curves', latex: `${yName(c)}=${unitList(ch.ys, unit)}` });
+    items.push({ type: 'expression', id: `cp${c}`, folderId: 'm2d-curves', latex: pointFn(c, unit) });
+  });
+  const colored = byColor.size > 1 || !byColor.has(INK);
+  runs.forEach((r, i) => {
+    const id = `sr${i + 1}`;
+    const latex = `${pName(r.c)}\\left(t,${rangeLatex(r.a, r.b)}\\right)`;
+    items.push({ type: 'expression', id, latex, color: r.color, lineWidth: String(opts.strokeWidth), lineOpacity: '1' });
+    entries.push({
+      id,
+      kind: 'stroke',
+      title: colored ? `Curves in ${r.color}` + (runs.length > byColor.size ? ` (chunk ${r.c})` : '') : runs.length > 1 ? `Curves, part ${i + 1}` : 'All curves',
+      summary: `${plural(r.strokes, 'stroke')} drawn by one equation (${r.segs.toLocaleString('en-US')} Bezier segments)`,
+      explain:
+        `Every stroke${colored ? ' of this colour' : ''} sits end to end in the point lists X_${r.c} and Y_${r.c}: each is its start point followed by 3 points per segment ` +
+        `(two pulls and the end, which is also the next segment's start). Two undefined fillers (u) separate neighbouring strokes, so every segment start is exactly 3 apart ` +
+        `and the list [${r.a}, ${r.a + 3}, ..., ${r.b}] reaches all of them. P_${r.c}(t,k) blends the 4 points from position k with B(t,a,b,c,d) = (1-t)^3 a + 3t(1-t)^2 b + 3t^2(1-t) c + t^3 d, ` +
+        `and the segments that touch a filler are undefined, so the gaps between strokes stay empty.` +
+        (unit !== 1 ? ` The lists hold whole numbers of ${unit} px; P_${r.c} multiplies by ${unit}.` : ''),
+      latex,
+    });
+  });
+}
+
 /** Outline shapes in the compact encoding (see packed.ts). */
-function addPackedStrokes(res: TraceResult, opts: BuildOptions, decimals: number, items: DesmosItem[], entries: InspectorEntry[]): void {
+function addPackedStrokes(res: TraceResult, opts: BuildOptions, unit: number, items: DesmosItem[], entries: InspectorEntry[]): void {
+  if (opts.mergeAll) {
+    addMergedStrokes(res, opts, unit, items, entries);
+    return;
+  }
   const { width: W, height: H } = res;
   const strokes = res.shapes.filter((s): s is StrokeShape => s.kind === 'stroke' && s.segs.length >= 8);
   interface Chunk {
@@ -149,9 +253,9 @@ function addPackedStrokes(res: TraceResult, opts: BuildOptions, decimals: number
   items.push({ type: 'expression', id: BEZIER_FN_ID, folderId: 'm2d-curves', latex: BEZIER_FN });
   chunks.forEach((ch, i) => {
     const c = i + 1;
-    items.push({ type: 'expression', id: `cx${c}`, folderId: 'm2d-curves', latex: `${xName(c)}=${packedList(ch.xs, decimals)}` });
-    items.push({ type: 'expression', id: `cy${c}`, folderId: 'm2d-curves', latex: `${yName(c)}=${packedList(ch.ys, decimals)}` });
-    items.push({ type: 'expression', id: `cp${c}`, folderId: 'm2d-curves', latex: pointFn(c) });
+    items.push({ type: 'expression', id: `cx${c}`, folderId: 'm2d-curves', latex: `${xName(c)}=${unitList(ch.xs, unit)}` });
+    items.push({ type: 'expression', id: `cy${c}`, folderId: 'm2d-curves', latex: `${yName(c)}=${unitList(ch.ys, unit)}` });
+    items.push({ type: 'expression', id: `cp${c}`, folderId: 'm2d-curves', latex: pointFn(c, unit) });
   });
 
   const mergeBelow = opts.mergeBelow ?? 0;
@@ -197,6 +301,242 @@ function addPackedStrokes(res: TraceResult, opts: BuildOptions, decimals: number
       latex,
     });
   }
+}
+
+/**
+ * Fill shapes, packed: the outline points of every region live in shared
+ * lists (X_fc, Y_fc), and each colour layer is ONE expression that builds a
+ * polygon per region with a list comprehension:
+ *   [polygon((X[S[j]...E[j]], Y[S[j]...E[j]])) for j=[1...n]]
+ * S and E say where each region's points start and end. Regions stay
+ * separate polygons (no bridges between them, so nothing stray shows even when
+ * a plain paste turns polygon outlines on); holes are still joined to their
+ * outline by a zero-width bridge. Layers are drawn in order, background first.
+ */
+function addPackedRegions(res: TraceResult, opts: BuildOptions, unit: number, items: DesmosItem[], entries: InspectorEntry[]): void {
+  const { width: W, height: H } = res;
+  interface Group {
+    color: string;
+    layer: number;
+    shapes: RegionShape[];
+  }
+  const groups: Group[] = [];
+  const byKey = new Map<string, Group>();
+  for (const sh of res.shapes) {
+    if (sh.kind !== 'region') continue;
+    const color = sh.color ?? INK;
+    const layer = sh.layer ?? 0;
+    const key = `${layer}|${color}`;
+    let g = byKey.get(key);
+    if (!g) {
+      g = { color, layer, shapes: [] };
+      byKey.set(key, g);
+      groups.push(g);
+    }
+    g.shapes.push(sh);
+  }
+  groups.sort((a, b) => a.layer - b.layer);
+  const colored = groups.length > 1 || groups.some((g) => g.color !== INK);
+
+  interface Chunk {
+    xs: number[];
+    ys: number[];
+  }
+  interface Run {
+    c: number;
+    gi: number;
+    color: string;
+    starts: number[];
+    ends: number[];
+    members: RegionShape[];
+  }
+  const chunks: Chunk[] = [];
+  const runs: Run[] = [];
+  let cur: Chunk | null = null;
+  groups.forEach((g, gi) => {
+    let run: Run | null = null;
+    for (const sh of g.shapes) {
+      const path = bridgedPath(regionRings(sh, H));
+      const m = path.length / 2;
+      if (m < 3) continue;
+      if (!cur || cur.xs.length + m > LIST_CAP) {
+        cur = { xs: [], ys: [] };
+        chunks.push(cur);
+        run = null;
+      }
+      if (!run) {
+        run = { c: chunks.length, gi, color: g.color, starts: [], ends: [], members: [] };
+        runs.push(run);
+      }
+      const a = cur.xs.length + 1;
+      for (let i = 0; i < path.length; i += 2) {
+        cur.xs.push(path[i]);
+        cur.ys.push(path[i + 1]);
+      }
+      run.starts.push(a);
+      run.ends.push(a + m - 1);
+      run.members.push(sh);
+    }
+  });
+  if (!runs.length) return;
+
+  items.push({ type: 'folder', id: 'm2d-fill', title: 'Fill data: outline points and where each region starts and ends', collapsed: true });
+  chunks.forEach((ch, i) => {
+    const c = i + 1;
+    items.push({ type: 'expression', id: `fx${c}`, folderId: 'm2d-fill', latex: `X_{f${c}}=${unitList(ch.xs, unit)}` });
+    items.push({ type: 'expression', id: `fy${c}`, folderId: 'm2d-fill', latex: `Y_{f${c}}=${unitList(ch.ys, unit)}` });
+  });
+  const ut = unitTimes(unit);
+  runs.forEach((r, i) => {
+    const k = i + 1;
+    items.push({ type: 'expression', id: `fs${k}`, folderId: 'm2d-fill', latex: `S_{f${k}}=${list(r.starts, 0)}` });
+    items.push({ type: 'expression', id: `fe${k}`, folderId: 'm2d-fill', latex: `E_{f${k}}=${list(r.ends, 0)}` });
+  });
+  runs.forEach((r, i) => {
+    const k = i + 1;
+    const id = `f${k}`;
+    const idx = `\\left[S_{f${k}}\\left[j\\right]...E_{f${k}}\\left[j\\right]\\right]`;
+    const n = r.members.length;
+    const latex = `\\left[${polygonLatex(`${ut}X_{f${r.c}}${idx}`, `${ut}Y_{f${r.c}}${idx}`)}\\operatorname{for}j=\\left[1...${n}\\right]\\right]`;
+    items.push({ type: 'expression', id, color: r.color, latex, fillOpacity: '1', lines: false, lineOpacity: '1' });
+    const bbox: BBox = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const m of r.members) {
+      bbox[0] = Math.min(bbox[0], m.bbox[0]);
+      bbox[1] = Math.min(bbox[1], m.bbox[1]);
+      bbox[2] = Math.max(bbox[2], m.bbox[2]);
+      bbox[3] = Math.max(bbox[3], m.bbox[3]);
+    }
+    const holes = r.members.reduce((a, m) => a + m.rings.length - 1, 0);
+    const pts = r.ends.reduce((a, e, j) => a + e - r.starts[j] + 1, 0);
+    const pct = (r.members.reduce((a, m) => a + Math.abs(m.area), 0) / (W * H)) * 100;
+    entries.push({
+      id,
+      kind: 'region',
+      title: colored ? `Colour layer ${r.gi + 1} (${r.color})` + (runs.length > groups.length ? `, chunk ${r.c}` : '') : runs.length > 1 ? `Filled shapes, part ${k}` : 'Filled shapes',
+      summary: `${plural(n, 'region')}, ${plural(pts, 'point')}, ${holes ? plural(holes, 'hole') : 'no holes'}, covers ${pct < 0.1 ? '<0.1' : pct.toFixed(1)}% of the image`,
+      explain:
+        `One equation fills every ${colored ? 'region of this colour' : 'filled region'}. The outline points of all regions sit end to end in X_f${r.c} and Y_f${r.c}; ` +
+        `S_f${k} and E_f${k} say where region j starts and ends, so X_f${r.c}[S_f${k}[j]...E_f${k}[j]] is just region j's outline. The "for j" list builds one polygon() per region. ` +
+        `Each outline runs counter-clockwise and each hole clockwise, joined by a zero-width bridge, so Desmos' fill rule cuts the holes out.` +
+        (unit !== 1 ? ` The point lists hold whole numbers of ${unit} px; the ${unit} in front scales them back.` : '') +
+        (colored ? ` Colour layers are drawn in order, background first, like stacked paper cut-outs.` : ''),
+      example: `Region 1 starts at (${num(r.members[0].rings[0][0])}, ${num(flipY(r.members[0].rings[0][1], H))}) and has ${plural(r.ends[0] - r.starts[0] + 1, 'point')}.`,
+      latex,
+      bbox,
+    });
+  });
+  void opts;
+}
+
+/**
+ * Fourier, fewest equations: the terms of every curve of a colour sit end to
+ * end in shared lists (K, A, B), and one expression draws them all:
+ *   [Z(t, K[S[j]...E[j]], A[S[j]...E[j]], B[S[j]...E[j]]) for j=[1...n]]
+ */
+function addMergedFourier(res: TraceResult, opts: BuildOptions, decimals: number, items: DesmosItem[], entries: InspectorEntry[]): void {
+  const { height: H } = res;
+  const curves = res.shapes.filter((s): s is FourierShape => s.kind === 'fourier');
+  if (!curves.length) return;
+  interface Chunk {
+    k: number[];
+    re: number[];
+    im: number[];
+  }
+  interface Run {
+    c: number;
+    color: string;
+    starts: number[];
+    ends: number[];
+    terms: number;
+  }
+  const byColor = new Map<string, FourierShape[]>();
+  for (const sh of curves) {
+    const color = sh.color ?? INK;
+    const g = byColor.get(color);
+    if (g) g.push(sh);
+    else byColor.set(color, [sh]);
+  }
+  const chunks: Chunk[] = [];
+  const runs: Run[] = [];
+  let cur: Chunk | null = null;
+  for (const [color, list] of byColor) {
+    let run: Run | null = null;
+    for (const sh of list) {
+      const col = fourierColumns(sh, H);
+      // per-term precision as in termList
+      const fmt = (v: number, j: number) => {
+        const r = Math.hypot(col.re[j], col.im[j]);
+        const f = 10 ** (r >= 1 ? Math.min(1, decimals) : Math.max(2, decimals));
+        return Math.round(v * f) / f;
+      };
+      const n = col.k.length;
+      if (!cur || cur.k.length + n > LIST_CAP) {
+        cur = { k: [], re: [], im: [] };
+        chunks.push(cur);
+        run = null;
+      }
+      if (!run) {
+        run = { c: chunks.length, color, starts: [], ends: [], terms: 0 };
+        runs.push(run);
+      }
+      const a = cur.k.length + 1;
+      for (let j = 0; j < n; j++) {
+        cur.k.push(col.k[j]);
+        cur.re.push(fmt(col.re[j], j));
+        cur.im.push(fmt(col.im[j], j));
+      }
+      run.starts.push(a);
+      run.ends.push(a + n - 1);
+      run.terms += n;
+    }
+  }
+  items.push({ type: 'folder', id: 'm2d-fn', title: 'The Fourier series function and every curve’s terms', collapsed: true });
+  items.push({ type: 'expression', id: FOURIER_FN_ID, folderId: 'm2d-fn', latex: FOURIER_FN });
+  chunks.forEach((ch, i) => {
+    const c = i + 1;
+    items.push({ type: 'expression', id: `zk${c}`, folderId: 'm2d-fn', latex: `K_{z${c}}=${list(ch.k, 0)}` });
+    items.push({ type: 'expression', id: `za${c}`, folderId: 'm2d-fn', latex: `A_{z${c}}=${list(ch.re, Math.max(2, decimals))}` });
+    items.push({ type: 'expression', id: `zb${c}`, folderId: 'm2d-fn', latex: `B_{z${c}}=${list(ch.im, Math.max(2, decimals))}` });
+  });
+  runs.forEach((r, i) => {
+    const k = i + 1;
+    items.push({ type: 'expression', id: `zs${k}`, folderId: 'm2d-fn', latex: `S_{z${k}}=${list(r.starts, 0)}` });
+    items.push({ type: 'expression', id: `ze${k}`, folderId: 'm2d-fn', latex: `E_{z${k}}=${list(r.ends, 0)}` });
+  });
+  const colored = byColor.size > 1 || !byColor.has(INK);
+  runs.forEach((r, i) => {
+    const k = i + 1;
+    const id = `zr${k}`;
+    const idx = `\\left[S_{z${k}}\\left[j\\right]...E_{z${k}}\\left[j\\right]\\right]`;
+    const latex = `\\left[Z\\left(t,K_{z${r.c}}${idx},A_{z${r.c}}${idx},B_{z${r.c}}${idx}\\right)\\operatorname{for}j=\\left[1...${r.starts.length}\\right]\\right]`;
+    items.push({ type: 'expression', id, latex, color: r.color, lineWidth: String(opts.strokeWidth), lineOpacity: '1', parametricDomain: { min: '0', max: '1' } });
+    entries.push({
+      id,
+      kind: 'fourier',
+      title: colored ? `Fourier curves in ${r.color}` : runs.length > 1 ? `Fourier curves, part ${k}` : 'All Fourier curves',
+      summary: `${plural(r.starts.length, 'curve')} drawn by one equation (${r.terms.toLocaleString('en-US')} rotating circles in all)`,
+      explain:
+        `Each curve is a sum of circles spinning at whole-number speeds. The terms of every curve sit end to end in K_z${r.c} (speeds), A_z${r.c} and B_z${r.c} ` +
+        `(radius and starting angle as a complex number). S_z${k}[j] and E_z${k}[j] say where curve j's terms start and end, and the "for j" list draws ` +
+        `Z(t,k,a,b) once per curve: its x is total(a cos(2 pi k t) - b sin(2 pi k t)) and its y is total(a sin(2 pi k t) + b cos(2 pi k t)).`,
+      latex,
+    });
+  });
+}
+
+/**
+ * Fourier coefficients with precision that follows each term's size: big
+ * circles to 0.1 px, small ones to 0.01 px (their absolute error is what shows).
+ */
+function termList(values: number[], c: { re: number[]; im: number[] }, decimals: number): string {
+  return list(
+    values.map((v, j) => {
+      const r = Math.hypot(c.re[j], c.im[j]);
+      const f = 10 ** (r >= 1 ? Math.min(1, decimals) : Math.max(2, decimals));
+      return Math.round(v * f) / f;
+    }),
+    Math.max(2, decimals),
+  );
 }
 
 /**

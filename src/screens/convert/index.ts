@@ -10,6 +10,7 @@ import { go, takePending, type PendingOpen } from '../../app';
 import { getPool, CancelledError } from '../../pipeline/pool';
 import { frameSignature, imageOtsu, looksLikeDrawing, signatureDiff } from '../../pipeline/image';
 import type { RgbaImage, TraceResult } from '../../pipeline/types';
+import { adjustPalette } from '../../pipeline/color';
 import { buildImageGraph, type BuiltGraph, type InspectorEntry } from '../../desmos/build';
 import { buildVideoGraph, type BuiltVideo } from '../../desmos/video';
 import { entriesFromState } from '../../desmos/explain';
@@ -19,19 +20,23 @@ import { imageViewport, stateWeight, type DesmosState } from '../../desmos/state
 import { decodeImage, isImageFile, isJsonFile, isVideoFile, rasterize, sourceSize, type Drawable } from '../../media/raster';
 import { FileVideo, frameTimes, type VideoSource } from '../../media/video';
 import { SampleVideo, sampleImageFile } from '../../media/samples';
-import { resultToSvgString } from '../../render/shapes';
+import { drawShapes, resultToSvgString } from '../../render/shapes';
 import { PreviewView } from '../../render/preview-view';
 import { startTour } from '../../ui/tour';
 import { getTheme, onThemeChange } from '../../ui/theme';
 import { CONVERT_TOUR, CONVERT_TOUR_ID } from '../tour-steps';
-import { isBetaEnabled, onBetaChange } from '../../account/beta';
+import { isBetaEnabled, onBetaChange, requireBeta } from '../../account/beta';
 import { getProject, listProjects, MAX_SOURCE_BYTES, newProjectId, saveProject, type Project } from '../../store/projects';
 import { SettingsPanel } from './settings-panel';
+import type { SourceLayers, BgOptions } from './layers';
+import type { EditorMode } from './draw/editor';
+import type { EnhanceMode } from '../../pipeline/autoenhance';
+import { BG_MODEL } from '../../pipeline/bgremove';
 import { Inspector } from './inspector';
 import { Analysis } from './analysis';
 import { Transport, type PlaybackMode } from './transport';
 import { openExportSheet, openShareSheet } from './export-sheet';
-import { BUDGET_RANGE, cropOf, defaultImageSettings, defaultVideoSettings, traceSettingsOf, type UiSettings, type VideoSettings } from './model';
+import { BUDGET_RANGE, ENHANCED_MAX_RES, HIGH_BUDGET_MAX, VIDEO_MAX_RES, cropOf, defaultImageSettings, defaultVideoSettings, traceSettingsOf, type UiSettings, type VideoSettings } from './model';
 
 type Source =
   | { kind: 'image'; name: string; file?: File; drawable: Drawable; width: number; height: number; bytes?: number }
@@ -229,6 +234,8 @@ class ConvertScreen {
     this.builtVideo = null;
     this.videoFrames = null;
     this.raster = null;
+    this.layers = null;
+    this.bgToken++;
     // A new source always starts fitted, even if its working width matches the last one.
     this.lastRes = 0;
     this.token++;
@@ -263,6 +270,7 @@ class ConvertScreen {
         { class: 'convert-samples' },
         button({ label: 'Try a sample image', icon: 'image', variant: 'outline', onClick: () => void this.open({ type: 'sample', kind: 'image' }) }),
         button({ label: 'Try a sample video', icon: 'film', variant: 'outline', onClick: () => void this.open({ type: 'sample', kind: 'video' }) }),
+        button({ label: 'Start a blank drawing', icon: 'pen', variant: 'outline', onClick: () => void this.openBlankDrawing() }),
       ),
       recent,
     );
@@ -307,6 +315,11 @@ class ConvertScreen {
       onChange: (p) => this.onSettings(p),
       onVideoChange: (p) => this.onVideoSettings(p),
       onBuildVideo: () => void this.buildVideo(),
+      onEdit: (mode) => void this.openPictureEditor(mode),
+      onAutoEnhance: (mode) => {
+        if (mode === 'cancel') this.enhanceCancelled = true;
+        else void this.runAutoEnhance(mode);
+      },
       onReset: () => {
         this.settings = src.kind === 'video' ? defaultVideoSettings() : defaultImageSettings();
         this.panel.set(this.settings);
@@ -658,6 +671,10 @@ class ConvertScreen {
       return;
     }
     if ('color' in p) this.applyDark();
+    if ('bgRemove' in p || 'bgMethod' in p || 'bgTolerance' in p || 'bgFeather' in p) {
+      void this.applyBackground();
+      return;
+    }
     if ('cropOn' in p || 'cropAspect' in p || 'crop' in p) {
       this.updateCropUi();
       if ('cropOn' in p || 'crop' in p) {
@@ -667,7 +684,8 @@ class ConvertScreen {
       }
       return;
     }
-    if ((('strokeWidth' in p || 'notes' in p || 'epicycles' in p || 'mergeSmall' in p) && !('resolution' in p))) {
+    const outputOnly = ['strokeWidth', 'notes', 'epicycles', 'mergeSmall', 'saturation', 'brightness', 'colorOverrides'];
+    if (Object.keys(p).every((k) => outputOnly.includes(k))) {
       // Output-only changes: rebuild the graph without re-tracing.
       if (this.source?.kind === 'video' && this.videoFrames) {
         this.panel.setVideoStale(true, 'Rebuild video graph');
@@ -699,15 +717,196 @@ class ConvertScreen {
     const crop = cropOf(this.settings);
     if (!src) return null;
     if (src.kind === 'image') {
-      const key = `${res}|${crop ? [crop.x, crop.y, crop.w, crop.h].join(',') : ''}`;
-      if (!this.raster || this.raster.key !== key) this.raster = { key, img: rasterize(src.drawable, res, crop) };
+      const layers = this.layers;
+      const bg = this.bgOptions();
+      const layered = !!layers && layers.active(bg);
+      const key = `${res}|${crop ? [crop.x, crop.y, crop.w, crop.h].join(',') : ''}|${layered ? `${layers!.version}|${bg.on}|${bg.feather}` : ''}`;
+      if (!this.raster || this.raster.key !== key) this.raster = { key, img: rasterize(layered ? layers!.compose(bg) : src.drawable, res, crop) };
       return this.raster.img;
     }
     if (src.kind === 'video') {
-      return src.video.frameAt(this.probeTime(), res, crop);
+      const frame = await src.video.frameAt(this.probeTime(), res, crop);
+      return this.layers ? this.layers.processFrame(frame, this.bgOptions()) : frame;
     }
     return null;
   }
+
+  /** Layers over the source: background removal, touch-ups and the user's drawing. */
+  private layers: SourceLayers | null = null;
+
+  private bgOptions(): BgOptions {
+    const s = this.settings;
+    return { on: s.bgRemove, method: s.bgMethod, tolerance: s.bgTolerance, feather: s.bgFeather };
+  }
+
+  /** Make the layers for the current source (pictures: the decoded image; videos: the probe frame, as a backdrop). */
+  private async ensureLayers(): Promise<SourceLayers | null> {
+    if (this.layers) return this.layers;
+    const src = this.source;
+    if (!src || src.kind === 'state') return null;
+    const { SourceLayers } = await import('./layers');
+    if (this.source !== src || this.layers) return this.layers;
+    if (src.kind === 'image') this.layers = new SourceLayers(src.drawable);
+    else {
+      const f = await src.video.frameAt(this.probeTime(), 960);
+      const c = document.createElement('canvas');
+      c.width = f.width;
+      c.height = f.height;
+      c.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(f.data), f.width, f.height), 0, 0);
+      this.layers = new SourceLayers(c);
+    }
+    return this.layers;
+  }
+
+  private enhanceCancelled = false;
+  private enhancing = false;
+
+  /** BETA Auto Enhance: search the settings for the closest match to the picture, then apply them. */
+  private async runAutoEnhance(mode: EnhanceMode): Promise<void> {
+    const src = this.source;
+    if (!src || src.kind === 'state' || this.enhancing) return;
+    if (!(await requireBeta('Auto Enhance'))) return;
+    this.enhancing = true;
+    this.enhanceCancelled = false;
+    const video = src.kind === 'video';
+    const s = this.settings;
+    const crop = cropOf(s);
+    const bg = this.bgOptions();
+    const layers = this.layers;
+    const imageAt = async (r: number): Promise<RgbaImage> => {
+      if (src.kind === 'image') return rasterize(layers && layers.active(bg) ? layers.compose(bg) : src.drawable, r, crop);
+      const f = await src.video.frameAt(this.probeTime(), r, crop);
+      return layers ? layers.processFrame(f, bg) : f;
+    };
+    this.panel.setEnhanceStatus(true, 'Measuring your picture...');
+    try {
+      const base = traceSettingsOf(s);
+      const { autoEnhance } = await import('../../pipeline/autoenhance');
+      const out = await autoEnhance(base, {
+        mode,
+        run: (img, ts) => getPool().run(img, ts, {}),
+        imageAt,
+        maxResolution: video ? VIDEO_MAX_RES : ENHANCED_MAX_RES,
+        maxBudget: video ? Math.min(4000, BUDGET_RANGE[s.mode].max) : Math.min(HIGH_BUDGET_MAX, s.mode === 'fill' ? HIGH_BUDGET_MAX : 20000),
+        targetMs: video ? 135 : 450,
+        targetBytes: video ? 6000 : 160_000,
+        onProgress: (done, total) => this.panel.setEnhanceStatus(true, `Trying settings: ${done} of about ${total}...`),
+        cancelled: () => this.enhanceCancelled || this.destroyed || this.source !== src,
+      });
+      if (this.destroyed || this.source !== src) return;
+      const b = out.settings;
+      const pct = (v: number) => `${Math.round(v * 100)}%`;
+      const patch: Partial<UiSettings> = {
+        resolution: b.resolution,
+        smoothing: b.smoothing,
+        edgeDetail: b.edgeDetail,
+        minSize: b.minSize,
+        blur: b.blur,
+        fourierTerms: b.fourierTerms,
+        budget: b.budget,
+        budgets: { ...s.budgets, [s.mode]: b.budget },
+        ...(s.mode !== 'fill' ? { lineSource: b.lineSource } : {}),
+      };
+      Object.assign(this.settings, patch);
+      if ('lineSource' in patch) this.lineSourceChosen = true;
+      this.panel.set(this.settings);
+      const better = out.after > out.before + 0.002;
+      this.panel.setEnhanceStatus(
+        false,
+        better
+          ? `Done: match ${pct(out.before)} to ${pct(out.after)} after ${out.tried} tries${this.enhanceCancelled ? ' (stopped early)' : ''}.`
+          : `Your settings were already the best match found (${pct(out.after)}, ${out.tried} tries).`,
+      );
+      this.raster = null;
+      if (this.builtVideo) this.panel.setVideoStale(true, 'Rebuild video graph');
+      this.retrace();
+    } catch (err) {
+      this.panel.setEnhanceStatus(false, `Auto Enhance stopped: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      this.enhancing = false;
+    }
+  }
+
+  /** A white page to draw on from scratch; opens straight into the editor. */
+  private async openBlankDrawing(): Promise<void> {
+    const c = document.createElement('canvas');
+    c.width = 1280;
+    c.height = 960;
+    const g = c.getContext('2d')!;
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, 0, c.width, c.height);
+    this.resetSourceState();
+    this.source = { kind: 'image', name: 'Drawing', drawable: c, width: c.width, height: c.height };
+    if (!this.settings || this.video) this.settings = defaultImageSettings();
+    // Drawn lines trace best as ink.
+    this.settings.lineSource = 'ink';
+    this.video = null;
+    this.projectId = null;
+    await this.renderWorkspace();
+    this.retraceNow();
+    void this.openPictureEditor('draw');
+  }
+
+  /** Draw on the picture, touch up the background cut-out, or paint extra detail. */
+  private async openPictureEditor(mode: EditorMode): Promise<void> {
+    const layers = await this.ensureLayers();
+    if (!layers) return;
+    if (mode === 'mask') {
+      const s = this.settings;
+      if (!s.bgRemove) return;
+      if (!layers.hasMask(s.bgMethod, s.bgTolerance)) await this.applyBackground();
+      if (!layers.hasMask(s.bgMethod, s.bgTolerance)) return;
+    }
+    // The editor loads on first use, so the converter itself stays light.
+    const { openEditor } = await import('./draw/editor');
+    openEditor({
+      mode,
+      layers,
+      bg: this.bgOptions(),
+      onDone: () => {
+        this.raster = null;
+        if (this.builtVideo) this.panel.setVideoStale(true, 'Rebuild video graph');
+        this.retrace();
+      },
+    });
+  }
+
+  /** Turn background removal on (computing the mask, downloading the model the first time) or update it. */
+  private async applyBackground(): Promise<void> {
+    const s = this.settings;
+    if (!s.bgRemove) {
+      this.panel.setBgStatus('');
+      this.raster = null;
+      this.retrace();
+      return;
+    }
+    const layers = await this.ensureLayers();
+    if (!layers) return;
+    const tok = ++this.bgToken;
+    try {
+      if (this.source?.kind === 'image') {
+        if (!layers.hasMask(s.bgMethod, s.bgTolerance)) {
+          this.panel.setBgStatus(s.bgMethod === 'auto' ? 'Preparing the background model...' : 'Finding the background...');
+          await layers.computeMask(s.bgMethod, s.bgTolerance, (p) => {
+            if (tok !== this.bgToken) return;
+            this.panel.setBgStatus(p.stage === 'download' ? `Downloading the background model (${BG_MODEL.size}): ${Math.round(p.loaded * 100)}%` : 'Removing the background...');
+          });
+        }
+      } else if (s.bgMethod === 'auto') {
+        this.panel.setBgStatus('Every frame gets its own cut-out when the video graph is built.');
+      }
+      if (tok !== this.bgToken) return;
+      if (this.source?.kind === 'image') this.panel.setBgStatus('');
+      this.raster = null;
+      if (this.builtVideo) this.panel.setVideoStale(true, 'Rebuild video graph');
+      this.retrace();
+    } catch (err) {
+      if (tok !== this.bgToken) return;
+      this.panel.setBgStatus(`Could not remove the background: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private bgToken = 0;
 
   private probeTime(): number {
     const v = this.video!;
@@ -761,7 +960,10 @@ class ConvertScreen {
     this.analysis.setSource(img);
     this.ws?.classList.add('is-tracing');
     try {
-      const res = await getPool().run(img, traceSettingsOf(this.settings), { preview: true, histogram: true });
+      const ts = traceSettingsOf(this.settings);
+      const detail = this.layers?.detailMask(img.width, img.height, cropOf(this.settings));
+      if (detail) ts.detail = detail;
+      const res = await getPool().run(img, ts, { preview: true, histogram: true });
       if (tok !== this.token || this.destroyed) return;
       const resChanged = this.lastRes !== res.width;
       this.lastRes = res.width;
@@ -774,9 +976,41 @@ class ConvertScreen {
     }
   }
 
-  private applyResult(res: TraceResult, keepView: boolean): void {
-    this.result = res;
+  /**
+   * The trace with the colour edits applied: saturation, brightness and
+   * per-colour replacements are recomputed from the palette each time, so
+   * changing them never needs a retrace.
+   */
+  private withColorEdits(res: TraceResult): TraceResult {
+    const pal = res.palette;
+    if (!pal) return res;
     const s = this.settings;
+    const colors = adjustPalette(pal, { saturation: s.saturation, brightness: s.brightness }, s.colorOverrides);
+    return { ...res, shapes: res.shapes.map((sh) => (sh.paletteIndex === undefined ? sh : { ...sh, color: colors[sh.paletteIndex] })) };
+  }
+
+  private lastPalette = '';
+  private lastAuto = '';
+
+  private applyResult(raw: TraceResult, keepView: boolean): void {
+    const s = this.settings;
+    // A new palette makes old per-colour replacements meaningless.
+    const palKey = raw.palette?.join(',') ?? '';
+    if (palKey !== this.lastPalette) {
+      if (this.lastPalette && Object.keys(s.colorOverrides).length) s.colorOverrides = {};
+      this.lastPalette = palKey;
+    }
+    // Auto Color suggests a saturation boost for each new automatic palette.
+    const autoKey = raw.autoColor ? `${raw.autoColor.k}|${raw.autoColor.saturation}|${palKey}` : '';
+    if (raw.autoColor && s.autoColor && autoKey !== this.lastAuto) {
+      s.saturation = raw.autoColor.saturation;
+      s.brightness = 0;
+      this.panel.set(s);
+    }
+    this.lastAuto = autoKey;
+    this.panel.setPalette(raw.palette ?? null, raw.autoColor?.k ?? null);
+    const res = this.withColorEdits(raw);
+    this.result = res;
     const usesThr = s.mode === 'fill' || s.lineSource === 'centerline' || s.lineSource === 'contours';
     this.panel.setAutoThreshold(res.stats.threshold);
     this.analysis.setResult(res, {
@@ -792,7 +1026,7 @@ class ConvertScreen {
       notes: s.notes,
       name,
       epicycles: s.epicycles,
-      mergeBelow: s.mergeSmall ? Math.max(14, Math.round(s.resolution / 30)) : 0,
+      mergeAll: s.mergeSmall,
     });
     if (this.source?.kind === 'video') this.panel.setVideoEstimate(this.built.bytes);
     this.inspector.setEntries(this.built.entries);
@@ -905,7 +1139,8 @@ class ConvertScreen {
       const autoThr = ts.threshold < 0;
       for (let i = 0; i < times.length; i++) {
         if (this.cancelBuild || this.destroyed) throw new CancelledError();
-        const img = await src.frameAt(times[i], ts.resolution, cropOf(this.settings));
+        const raw = await src.frameAt(times[i], ts.resolution, cropOf(this.settings));
+        const img = this.layers ? await this.layers.processFrame(raw, this.bgOptions()) : raw;
         const sig = frameSignature(img);
         if (lastSig && lastKept >= 0 && signatureDiff(sig, lastSig) < 1.2) {
           dupOf.set(i, lastKept);
@@ -1029,7 +1264,29 @@ class ConvertScreen {
     if (this.source?.kind === 'video' && !this.builtVideo) {
       toast('This is a single preview frame. Click "Build video graph" to export the whole clip.', { timeout: 6000 });
     }
-    openExportSheet({ name: this.source?.name ?? 'graph', kind: this.kind(), state, bytes: stateWeight(state).bytes });
+    const res = this.videoFrames && this.transport ? this.videoFrames[this.transport.current - 1] : this.result;
+    openExportSheet({
+      name: this.source?.name ?? 'graph',
+      kind: this.kind(),
+      state,
+      bytes: stateWeight(state).bytes,
+      png: res ? () => this.renderPng(res) : undefined,
+    });
+  }
+
+  /** The traced drawing as a PNG (long side 1600 px, on white), for Desmos' image upload. */
+  private renderPng(res: TraceResult): Promise<Blob | null> {
+    const shown = this.withColorEdits(res);
+    const s = 1600 / Math.max(shown.width, shown.height);
+    const c = document.createElement('canvas');
+    c.width = Math.round(shown.width * s);
+    c.height = Math.round(shown.height * s);
+    const g = c.getContext('2d')!;
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, 0, c.width, c.height);
+    g.scale(s, s);
+    drawShapes(g, shown.shapes, { ink: '#000000', strokeWidth: Math.max(0.8, (this.settings.strokeWidth * 0.6) / s) });
+    return new Promise((resolve) => c.toBlob(resolve, 'image/png'));
   }
 
   private async share(): Promise<void> {
@@ -1069,8 +1326,7 @@ class ConvertScreen {
         unitLabel: this.builtVideo ? (this.builtVideo.kind === 'fill' ? 'points' : 'segments') : r ? BUDGET_RANGE[r.mode].units : 'items',
         bytes: w.bytes,
         expressions: w.expressions,
-        frames: this.builtVideo?.frames,
-        fps: this.builtVideo?.fps,
+        ...(this.builtVideo ? { frames: this.builtVideo.frames, fps: this.builtVideo.fps } : {}),
       },
       thumb,
       state,

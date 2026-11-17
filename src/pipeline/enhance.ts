@@ -1,6 +1,6 @@
 /**
  * Clean-up filters before tracing.
- *  - Super Enhanced (BETA): contrast stretch, gentle denoise and an unsharp
+ *  - Sharpen & denoise: contrast stretch, gentle denoise and an unsharp
  *    mask, for detailed high-resolution traces.
  *  - Line-art cleanup (BETA): a median filter that removes manga screentone
  *    dots, and gap closing on the ink map so broken lines join up.
@@ -74,7 +74,7 @@ export function unsharp(gray: Float32Array, w: number, h: number, sigma: number,
   return out;
 }
 
-/** Super Enhanced preprocessing for high-resolution traces. */
+/** "Sharpen & denoise" preprocessing, most useful for high-resolution traces. */
 export function enhanceGray(gray: Float32Array, w: number, h: number): Float32Array {
   return unsharp(median3(stretchContrast(gray), w, h), w, h, 1.0, 0.6);
 }

@@ -4,43 +4,47 @@ import { el, fmtBytes } from '../../ui/dom';
 import { button, codeBlock, segmented, sheet, toast, toggle } from '../../ui/components';
 import { icon } from '../../ui/icons';
 import type { DesmosState } from '../../desmos/state';
-import { bookmarkletHref, consoleSnippet, copyText, downloadText, latexLines, slug, stateJson } from '../../desmos/export';
+import { bookmarkletHref, consoleSnippet, copyText, downloadText, isChromebook, latexLines, latexParts, slug, stateJson } from '../../desmos/export';
 import { stageHandoff } from '../../store/projects';
 import { shareUrl, SHARE_LINK_LIMIT } from '../../store/share';
 
-type Route = 'bookmark' | 'console' | 'json' | 'latex';
+type Route = 'latex' | 'bookmark' | 'console' | 'json' | 'image';
 
 export interface ExportInput {
   name: string;
   kind: 'image' | 'video';
   state: DesmosState;
   bytes: number;
+  /** A PNG of the traced drawing (for Desmos' image upload), when available. */
+  png?: () => Promise<Blob | null>;
 }
 
 const BIG = 2_500_000;
 
-/** A copy of the state with Desmos' grid, axes and axis numbers turned on. */
-export function withAxes(state: DesmosState): DesmosState {
-  return { ...state, graph: { ...state.graph, showGrid: true, showXAxis: true, showYAxis: true, xAxisNumbers: true, yAxisNumbers: true } };
+/** A copy of the state with Desmos' grid, axes and axis numbers on (on = true) or hidden. */
+export function withAxes(state: DesmosState, on = true): DesmosState {
+  return { ...state, graph: { ...state.graph, showGrid: on, showXAxis: on, showYAxis: on, xAxisNumbers: on, yAxisNumbers: on } };
 }
 
 export function openExportSheet(input: ExportInput): void {
   const { name } = input;
   const baseState = input.state;
-  let state = baseState;
+  // Desmos' normal coordinate plane by default (older saved projects were blank).
+  let state = withAxes(baseState);
   stageHandoff(name, state).catch(() => undefined);
   const axesToggle = toggle({
-    label: 'Include axes & grid',
+    label: 'Blank page (hide grid and axes)',
     value: false,
-    hint: 'Off keeps the drawing on a clean, blank page in Desmos.',
+    hint: 'Off shows Desmos’ usual grid, axes and numbers behind the drawing.',
     onChange: (v) => {
-      state = v ? withAxes(baseState) : baseState;
+      state = withAxes(baseState, !v);
       stageHandoff(name, state).catch(() => undefined);
       renderRoute();
     },
   });
 
-  let route: Route = 'bookmark';
+  // Chromebooks block bookmarklets and the console: start them on Paste.
+  let route: Route = isChromebook() ? 'latex' : 'bookmark';
   const body = el('div', { class: 'xp-body' });
 
   const weight = el(
@@ -59,10 +63,11 @@ export function openExportSheet(input: ExportInput): void {
 
   const tabs = segmented<Route>(
     [
+      { value: 'latex', label: 'Paste', icon: 'copy', title: 'Copy and paste plain equations. Works on Chromebooks.' },
       { value: 'bookmark', label: 'One click', icon: 'bookmark' },
       { value: 'console', label: 'Console', icon: 'terminal' },
-      { value: 'json', label: 'JSON file', icon: 'download' },
-      { value: 'latex', label: 'LaTeX', icon: 'code' },
+      { value: 'json', label: 'JSON', icon: 'download' },
+      ...(input.png ? [{ value: 'image' as const, label: 'Image', icon: 'image' as const }] : []),
     ],
     route,
     (r) => {
@@ -128,12 +133,89 @@ export function openExportSheet(input: ExportInput): void {
         el('p', { class: 'xp-lead' }, 'The raw Desmos graph state as a file. Keep it as a backup, open it here later (drop it on the converter), or load it on desmos.com with the console route.'),
         button({ label: `Download ${slug(name)}.json (${fmtBytes(stateJson(state).length)})`, icon: 'download', variant: 'primary', onClick: () => downloadText(`${slug(name)}.desmos.json`, stateJson(state, true)) }),
       );
-    } else {
-      const lines = latexLines(state);
+    } else if (route === 'image') {
       body.append(
-        el('p', { class: 'xp-lead' }, 'Plain equations, one per line. Click the first empty line in Desmos and paste: Desmos turns every line into its own expression.'),
-        el('p', { class: 'field-hint' }, 'Styling does not survive a paste: lines get Desmos default colours, fills are 40% transparent, and the data lists are not tucked into a folder. Use One click or Console for a black-and-white copy.'),
-        button({ label: `Copy ${lines.split('\n').length.toLocaleString('en-US')} lines (${fmtBytes(lines.length)})`, icon: 'copy', variant: 'primary', onClick: () => copyText(lines).then(() => toast('LaTeX copied', { tone: 'success' }), () => toast('Copy failed', { tone: 'error' })) }),
+        el('p', { class: 'xp-lead' }, 'A picture of the traced drawing, for Desmos’ image upload. Works everywhere, but Desmos shows it as a picture, not as equations.'),
+        el(
+          'ol',
+          { class: 'xp-steps' },
+          step(1, el('p', null, 'Download the PNG below.')),
+          step(2, el('p', null, 'In Desmos, click ', el('strong', null, '+'), ' at the top of the expression list, then ', el('strong', null, 'image'), ', and pick the file.')),
+          step(3, el('p', null, 'Drag its corners to size it. Use Paste for real equations you can edit.')),
+        ),
+        button({
+          label: 'Download PNG',
+          icon: 'download',
+          variant: 'primary',
+          onClick: async () => {
+            const blob = await input.png?.();
+            if (!blob) return toast('Could not draw the picture', { tone: 'error' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `${slug(name)}.png`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+          },
+        }),
+      );
+    } else {
+      const text = latexLines(state);
+      const parts = latexParts(text);
+      const copied = new Set<number>();
+      const copyPart = (i: number, btn: HTMLElement) =>
+        copyText(parts[i]).then(
+          () => {
+            copied.add(i);
+            if (!btn.classList.contains('is-done')) {
+              const svg = btn.querySelector('svg');
+              svg?.replaceWith(icon('check', { size: Number(svg.getAttribute('width')) || 16 }));
+            }
+            btn.classList.add('is-done');
+            toast(parts.length > 1 ? `Part ${i + 1} copied: paste it into Desmos` : 'Copied: paste it into Desmos', { tone: 'success' });
+          },
+          () => toast('Copy failed', { tone: 'error' }),
+        );
+      const partButtons = parts.map((p, i) => {
+        const b = button({
+          label: parts.length > 1 ? `Copy part ${i + 1} of ${parts.length} (${fmtBytes(p.length)})` : `Copy ${p.split('\n').length.toLocaleString('en-US')} lines (${fmtBytes(p.length)})`,
+          icon: 'copy',
+          variant: i === 0 ? 'primary' : 'outline',
+          onClick: () => void copyPart(i, b),
+        });
+        return b;
+      });
+      body.append(
+        el('p', { class: 'xp-lead' }, 'Works on school Chromebooks: no bookmarks, extensions or console. You copy plain equations here and paste them into Desmos.'),
+        el(
+          'ol',
+          { class: 'xp-steps' },
+          step(1, el('p', null, 'Open ', el('a', { href: 'https://www.desmos.com/calculator', target: '_blank', rel: 'noopener' }, 'desmos.com/calculator'), ' (a new, empty graph is best).')),
+          step(2, el('p', null, 'Click the first empty line in the expression list.')),
+          step(
+            3,
+            el(
+              'p',
+              null,
+              parts.length > 1
+                ? `Copy part 1 below and paste it (Ctrl+V). Wait until Desmos finishes, click the empty line at the bottom, then do the same with the next part.`
+                : 'Copy below and paste (Ctrl+V). Desmos turns every line into its own expression.',
+            ),
+          ),
+          step(
+            4,
+            el(
+              'p',
+              null,
+              input.kind === 'video'
+                ? 'Press play on the F slider to animate. Its normal -10 to 10 range covers every frame.'
+                : 'Done: the drawing appears in the middle of the usual grid.',
+            ),
+          ),
+        ),
+        el('div', { class: 'xp-parts' }, ...partButtons),
+        el('p', { class: 'field-hint' }, 'A paste keeps the equations but not the styling: Desmos picks the colours, and fills are 40% see-through. You can recolour each colour layer by hand.'),
       );
     }
   }

@@ -19,18 +19,114 @@ export function consoleSnippet(state: DesmosState): string {
   return `Calc.setState(${stateJson(state)}, {allowUndo: true})`;
 }
 
-/** Plain LaTeX, data lists first so variables exist before they are used. */
-export function latexLines(state: DesmosState): string {
+export interface PasteOptions {
+  /**
+   * Fit the drawing into Desmos' default view (about -10..10). A plain paste
+   * cannot set the viewport, so without this the picture lands at 0..W, off
+   * screen. Default true.
+   */
+  fit?: boolean;
+}
+
+/** Scale and centre that move the graph's viewport into Desmos' default view. */
+export function pasteFit(state: DesmosState): { s: number; cx: number; cy: number } {
+  const v = state.graph.viewport;
+  const w = Math.max(1e-9, v.xmax - v.xmin);
+  const h = Math.max(1e-9, v.ymax - v.ymin);
+  const s = Math.min(18 / w, 10 / h);
+  return {
+    s: Number(s.toPrecision(3)),
+    cx: Number(((v.xmin + v.xmax) / 2).toFixed(2)),
+    cy: Number(((v.ymin + v.ymax) / 2).toFixed(2)),
+  };
+}
+
+const shift = (v: string, c: number) => (c === 0 ? v : c > 0 ? `${v}-${c}` : `${v}+${-c}`);
+
+/** Q(x,y): the paste-fit transform, applied inside the shared point functions. */
+export function fitFunction(state: DesmosState): string {
+  const { s, cx, cy } = pasteFit(state);
+  return `Q\\left(x,y\\right)=\\left(${s}\\left(${shift('x', cx)}\\right),${s}\\left(${shift('y', cy)}\\right)\\right)`;
+}
+
+const POLY = '\\operatorname{polygon}\\left(\\left(';
+const FRAME = '\\left[F\\right]';
+const SHARED_FN = /^(P_\{\d+\}|Z)\\left\(/;
+
+/**
+ * Plain LaTeX for pasting into desmos.com, data lists first so variables
+ * exist before they are used. Rotating-circle animations are left out (they
+ * need a ticker, which a paste cannot create).
+ *
+ * With `fit` (default), a transform Q is defined once and wrapped around the
+ * shared point functions (P_c, Z) and every drawn polygon or point curve, so
+ * the drawing appears centred in Desmos' default view. For videos, F is
+ * remapped so Desmos' default -10..10 slider covers every frame:
+ *   F_r = clamp(round((F+10)(N-1)/20) + 1)
+ */
+export function latexLines(state: DesmosState, opts: PasteOptions = {}): string {
+  const fit = opts.fit !== false;
+  const handler = state.expressions.ticker?.handlerLatex ?? '';
+  const frames = handler.startsWith('F\\to') ? Number(/\\left\(F,(\d+)\\right\)/.exec(handler)?.[1] ?? 0) : 0;
   const data: string[] = [];
   const draw: string[] = [];
+  if (fit) data.push(fitFunction(state));
+  if (frames > 1) {
+    data.push(
+      `F_{r}=\\max\\left(1,\\min\\left(${frames},\\operatorname{round}\\left(\\frac{\\left(F+10\\right)\\cdot ${frames - 1}}{20}\\right)+1\\right)\\right)`,
+    );
+  }
   for (const item of state.expressions.list) {
     if (item.type !== 'expression') continue;
-    (item.folderId ? data : draw).push(item.latex);
+    if (item.id.startsWith('epi')) continue;
+    let latex = item.latex;
+    if (frames > 1) {
+      if (item.id === 'F') latex = 'F=-10';
+      else if (!item.folderId) latex = latex.split(FRAME).join('\\left[F_{r}\\right]');
+    }
+    if (fit) {
+      if (item.folderId) {
+        if (SHARED_FN.test(latex) && latex.includes('=\\left(')) latex = latex.replace('=\\left(', '=Q\\left(');
+      } else if (latex.includes(POLY)) {
+        // Every polygon((xs, ys)), including ones inside a "for" list.
+        latex = latex.split(POLY).join('\\operatorname{polygon}\\left(Q\\left(');
+      } else if (latex.startsWith('\\left(')) {
+        latex = 'Q' + latex;
+      }
+    }
+    (item.folderId ? data : draw).push(latex);
   }
   return [...data, ...draw].join('\n');
 }
 
-export const DESMOS_ORIGINS = ['https://www.desmos.com', 'https://desmos.com'];
+/**
+ * Split pasted LaTeX into parts of at most `max` characters, never inside a
+ * line, keeping the order (data lists first). Huge single pastes can freeze a
+ * Chromebook's Desmos tab; several smaller pastes stay responsive.
+ */
+export function latexParts(text: string, max = 60_000): string[] {
+  const parts: string[] = [];
+  let cur: string[] = [];
+  let len = 0;
+  for (const line of text.split('\n')) {
+    if (cur.length && len + line.length + 1 > max) {
+      parts.push(cur.join('\n'));
+      cur = [];
+      len = 0;
+    }
+    cur.push(line);
+    len += line.length + 1;
+  }
+  if (cur.length) parts.push(cur.join('\n'));
+  return parts;
+}
+
+/** Managed school laptops (ChromeOS) usually block bookmarklets and the console, so pasting is the way in. */
+export function isChromebook(): boolean {
+  return typeof navigator !== 'undefined' && /\bCrOS\b/.test(navigator.userAgent);
+}
+
+export const DESMOS_ORIGINS =['https://www.desmos.com', 'https://desmos.com'];
 
 /**
  * javascript: URL for the "Send to Desmos" bookmark. `origin` is this site's

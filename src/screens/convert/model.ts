@@ -20,8 +20,24 @@ export interface UiSettings extends TraceSettings {
   /** BETA In Color. */
   color: boolean;
   colors: number;
-  /** BETA Super Enhanced (up to 1080p). */
+  /** BETA Auto Color: pick the colour count (and a saturation boost) automatically. */
+  autoColor: boolean;
+  /** Colour output: saturation multiplier (1 = as traced). */
+  saturation: number;
+  /** Colour output: brightness shift, -0.5..0.5. */
+  brightness: number;
+  /** Colour output: per-colour replacements, palette index -> #rrggbb. */
+  colorOverrides: Record<number, string>;
+  /** Sharpen & denoise before tracing (no longer BETA). */
   enhance: boolean;
+  /** Background remover. */
+  bgRemove: boolean;
+  /** "auto" (MODNet model) or "plain" (flood fill a flat background). */
+  bgMethod: 'auto' | 'plain';
+  /** Plain method: colour tolerance 0..100. */
+  bgTolerance: number;
+  /** Edge softening, px. */
+  bgFeather: number;
   /** BETA Line-art cleanup. */
   lineCleanup: boolean;
   /** BETA Crop and resize. */
@@ -43,8 +59,12 @@ export interface Crop {
 }
 export type CropAspect = 'free' | '1:1' | '4:3' | '16:9' | '9:16';
 
-/** Highest working resolution: 1920 px (1080p) with Super Enhanced, otherwise 1200 for stills. */
+/** Highest working resolution for still images: 1920 px (1080p). */
 export const ENHANCED_MAX_RES = 1920;
+/** Largest working resolution for video frames. */
+export const VIDEO_MAX_RES = 960;
+/** Largest equation budget for still images. */
+export const HIGH_BUDGET_MAX = 40000;
 
 /** Slider values each preset applies (Balanced keeps Desmos fast; Max detail is for stills). */
 export function presetValues(q: Quality, video: boolean): Partial<UiSettings> {
@@ -84,10 +104,18 @@ export function defaultImageSettings(): UiSettings {
     epicycles: false,
     mergeSmall: true,
     quality: 'balanced',
-    axes: false,
+    axes: true,
     color: false,
     colors: 8,
+    autoColor: false,
+    saturation: 1,
+    brightness: 0,
+    colorOverrides: {},
     enhance: false,
+    bgRemove: false,
+    bgMethod: 'auto',
+    bgTolerance: 18,
+    bgFeather: 1,
     lineCleanup: false,
     cropOn: false,
     crop: null,
@@ -140,7 +168,8 @@ export function traceSettingsOf(s: UiSettings): TraceSettings {
     // BETA settings only apply for signed-in people (a saved project may carry them).
     color: beta && s.color,
     colors: s.colors,
-    enhance: beta && s.enhance,
+    autoColor: beta && s.color && s.autoColor,
+    enhance: s.enhance,
     lineCleanup: beta && s.lineCleanup,
   };
 }

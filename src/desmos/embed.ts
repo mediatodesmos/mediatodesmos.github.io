@@ -117,7 +117,7 @@ export class GraphView {
     this.calc.setState(structuredClone(state));
     if (keep) this.calc.setMathBounds({ left: keep.left, right: keep.right, bottom: keep.bottom, top: keep.top });
     else this.fit(state.graph.viewport);
-    if (this.axes) this.setAxes(true);
+    this.setAxes(this.axes);
   }
 
   /** Where an image of w x h px (Desmos x 0..w, y 0..h) sits in the container, in CSS px. */
